@@ -1,0 +1,58 @@
+/**
+ *      ______ ____  _    _ _   _ _____  _______     __
+ *     |  ____/ __ \| |  | | \ | |  __ \|  __ \ \   / /
+ *     | |__ | |  | | |  | |  \| | |  | | |__) \ \_/ / 
+ *     |  __|| |  | | |  | | . ` | |  | |  _  / \   /  
+ *     | |   | |__| | |__| | |\  | |__| | | \ \  | |   
+ *     |_|    \____/ \____/|_| \_|_____/|_|  \_\ |_|   
+ *                                                
+ *                Platform Manifest Schema
+ *
+ * ------------------------------------------------------
+ *  Documentation: https://foundry.dev/wiki
+ *  License: MIT
+ * ------------------------------------------------------
+ */
+{
+  // Version of the schema manifest itself
+  "version": "0.0.1",
+
+  // Default manifest filename Foundry expects in platform repos
+  "manifestFile": "platform.foundry",
+
+  // Path to the actual JSON Schema file that defines platform structure
+  "jsonSchemaFile": "./schemas/platform.schema.v1.json",
+
+  // Indicate the manifest and schema both use JSONC syntax
+  "syntax": "jsonc",
+
+  // Core collections inside platform.foundry (used by CLI + tooling)
+  "collections": {
+    "apps": {
+      "path": "spec.apps",
+      "idField": "id"
+    },
+    "services": {
+      "path": "spec.services",
+      "idField": "id"
+    },
+    "infra": {
+      "path": "spec.infra",
+      "idField": "id"
+    },
+    "actors": {
+      "path": "spec.actors",
+      "idField": "id"
+    },
+    "relationships": {
+      "path": "spec.relationships"
+    }
+  },
+
+  // Global ID rules for all objects (keeps manifests consistent)
+  "idRules": {
+    "pattern": "^[a-z0-9][a-z0-9-]*$",
+    "maxLength": 64,
+    "case": "lower-kebab"
+  }
+}
