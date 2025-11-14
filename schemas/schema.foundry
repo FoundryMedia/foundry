@@ -13,46 +13,28 @@
  *  License: MIT
  * ------------------------------------------------------
  */
+
 {
-  // Version of the schema manifest itself
+  // Version of this schema definition
   "version": "0.0.1",
 
-  // Default manifest filename Foundry expects in platform repos
-  "manifestFile": "platform.foundry",
-
-  // Path to the actual JSON Schema file that defines platform structure
-  "jsonSchemaFile": "./schemas/platform.schema.v1.json",
-
-  // Indicate the manifest and schema both use JSONC syntax
-  "syntax": "jsonc",
-
-  // Core collections inside platform.foundry (used by CLI + tooling)
-  "collections": {
-    "apps": {
-      "path": "spec.apps",
-      "idField": "id"
+  // JSON Schema describing platform.foundry
+  "schema": {
+    "$schema": "https://json-schema.org/draft/2020-12/schema",
+    "title": "Foundry Platform Manifest v0",
+    "type": "object",
+    "properties": {
+      "name": {
+        "type": "string",
+        "description": "Human-friendly name of the platform."
+      },
+      "version": {
+        "type": "string",
+        "description": "Version of this platform manifest.",
+        "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+      }
     },
-    "services": {
-      "path": "spec.services",
-      "idField": "id"
-    },
-    "infra": {
-      "path": "spec.infra",
-      "idField": "id"
-    },
-    "actors": {
-      "path": "spec.actors",
-      "idField": "id"
-    },
-    "relationships": {
-      "path": "spec.relationships"
-    }
-  },
-
-  // Global ID rules for all objects (keeps manifests consistent)
-  "idRules": {
-    "pattern": "^[a-z0-9][a-z0-9-]*$",
-    "maxLength": 64,
-    "case": "lower-kebab"
+    "required": ["name", "version"],
+    "additionalProperties": false
   }
 }
