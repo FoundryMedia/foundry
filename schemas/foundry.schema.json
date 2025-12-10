@@ -1,0 +1,64 @@
+{
+  "$id": "https://foundry-dev.com/schemas/foundry.schema.json",
+  "$schema": "http://json-schema.org/draft-07/schema#",
+
+  "title": "Foundry Platform Manifest",
+  "description": "Declarative manifest for a Foundry-managed platform.",
+
+  "schemaVersion": "0.1.0",
+
+  "required": [
+    "$schema",
+    "schemaVersion",
+    "name",
+    "repository",
+    "ci"
+  ],
+
+  "properties": {
+    "$schema": {
+      "description": "URI for the JSON Schema used to validate this manifest.",
+      "type": "string",
+      "format": "uri"
+    },
+
+    "schemaVersion": {
+      "description": "Version of the Foundry manifest specification.",
+      "type": "string",
+      "pattern": "^\\d+\\.\\d+\\.\\d+$"
+    },
+
+    "name": {
+      "description": "Human-readable name of the platform.",
+      "type": "string",
+      "minLength": 1
+    },
+
+    "repository": {
+      "description": "Name of the root repository folder for this platform (used by Foundry CLI).",
+      "type": "string",
+      "pattern": "^[a-z0-9-]+$"
+    },
+
+    "ci": {
+      "description": "Continuous Integration and infrastructure orchestration configuration.",
+
+      "required": [
+        "orchestration",
+        "provider"
+      ],
+
+      "properties": {
+        "orchestration": {
+          "description": "Tool used for infrastructure orchestration.",
+          "enum": ["terraform"]
+        },
+
+        "provider": {
+          "description": "Primary infrastructure provider for this platform.",
+          "enum": ["aws"]
+        }
+      }
+    }
+  }
+}
