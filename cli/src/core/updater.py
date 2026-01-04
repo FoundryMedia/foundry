@@ -242,7 +242,7 @@ def install_onefile(exe_path: Path) -> None:
             raise RuntimeError(f"failed to schedule replacement batch: {e}") from e
 
 # high-level orchestrator (safe skeleton)
-def perform_update_flow(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
+def execute_update(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
     """
     Orchestrate update:
       - fetch release metadata (unauthenticated by default)

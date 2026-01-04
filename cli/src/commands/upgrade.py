@@ -20,7 +20,7 @@ def upgrade_cmd(check_only: bool, assume_yes: bool, force: bool) -> None:
     TODO: implement actual download/replace logic in a safe, atomic way.
     """
     try:
-        local, latest = _version.get_update_hint(timeout=1.0)
+        local, latest = _version.check_for_updates(timeout=1.0)
     except Exception as e:
         click.secho(f"Unable to determine versions: {type(e).__name__}: {e}", fg="red", err=True)
         raise SystemExit(2)
@@ -41,7 +41,7 @@ def upgrade_cmd(check_only: bool, assume_yes: bool, force: bool) -> None:
         # Perform the upgrade steps
         token = os.environ.get("GITHUB_TOKEN")
         try:
-            result = _updater.perform_update_flow(token=token, assume_yes=assume_yes)
+            result = _updater.execute_update(token=token, assume_yes=assume_yes)
             click.secho(f"Updated to {result.get('version')}", fg="green", bold=True)
         except Exception as e:
             click.secho(f"Upgrade failed: {type(e).__name__}: {e}", fg="red", err=True)
