@@ -29,7 +29,7 @@ try:
             """Apply the same beautification used for the main help to any help text."""
             text = help_text
             try:
-                local, _ = version.get_update_hint(timeout=0.5)
+                local, _ = version.check_for_updates(timeout=0.5)
                 title = click.style(f"Foundry CLI v{local}", fg="blue", bold=True)
                 text = text.replace("Foundry CLI", title, 1)
             except Exception:
@@ -109,7 +109,7 @@ try:
             help_text = orig
 
             try:
-                local, _ = version.get_update_hint(timeout=0.5)
+                local, _ = version.check_for_updates(timeout=0.5)
                 title = click.style(f"Foundry CLI v{local}", fg="blue", bold=True)
                 help_text = help_text.replace("Foundry CLI", title, 1)
             except Exception:
@@ -136,7 +136,7 @@ try:
         Foundry CLI
         """
         try:
-            local, latest = version.get_update_hint(timeout=0.6)
+            local, latest = version.check_for_updates(timeout=0.6)
         except Exception as e:
             click.secho(f"Unexpected error: {type(e).__name__}: {e}", fg="red", bold=True, err=True)
             ctx.exit(1)
