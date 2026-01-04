@@ -1,5 +1,11 @@
 import sys
 
+if "--updater-sidecar" in sys.argv:
+    from src.core import updater_sidecar
+
+    sidecar_args = [arg for arg in sys.argv[1:] if arg != "--updater-sidecar"]
+    raise SystemExit(updater_sidecar.main(sidecar_args))
+
 _import_error = None
 try:
     import re
