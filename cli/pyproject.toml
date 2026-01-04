@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "foundry-cli"
+version = "0.0.5"
+description = "Foundry CLI - run and manage platform apps"
+authors = [{name="Foundry"}]
+requires-python = ">=3.9"
+dependencies = [
+  "click",
+  "jsonschema"
+]
+
+[project.scripts]
+foundry = "src.main:cli"
