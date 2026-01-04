@@ -50,7 +50,7 @@ def upgrade_cmd(check_only: bool, assume_yes: bool, force: bool) -> None:
                     bold=True,
                 )
                 raise SystemExit(0)
-            click.secho(f"Updated to {result.get('version')}", fg="green", bold=True)
+            click.secho(f"Update complete: {result.get('version')}", fg="green", bold=True)
         except Exception as e:
             click.secho(f"Upgrade failed: {type(e).__name__}: {e}", fg="red", err=True)
             raise SystemExit(2)
