@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foundry-cli"
-version = "0.1.1"
+version = "0.1.2"
 description = "Foundry CLI - run and manage platform apps"
 authors = [{name="Foundry"}]
 requires-python = ">=3.9"
