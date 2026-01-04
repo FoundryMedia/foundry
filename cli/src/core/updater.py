@@ -4,6 +4,7 @@ import sys
 import shutil
 import tempfile
 import subprocess
+import stat
 import time
 import hashlib
 import platform
@@ -193,63 +194,52 @@ def _elevated_replace(src: Path, target: Path, timeout: int = 120) -> None:
 
 def install_onefile(exe_path: Path) -> None:
     """
-    Replace running onefile exe with downloaded exe.
+    Replace the running onefile exe with downloaded exe.
+
     Strategy:
-      - copy new exe to <target>.new in the same folder
-      - try os.replace to swap in place
-      - on PermissionError or if target is locked, invoke elevated helper which waits and replaces
+      - copy downloaded exe to <running>.new next to running exe
+      - try os.replace
+      - if replace fails, spawn detached batch that loops until move succeeds then starts new exe.
+      - if target dir not writable, spawn the batch elevated so it can write into Program Files.
     """
     target = Path(sys.executable).resolve()
     target_dir = target.parent
-    tmp_name = target.name + ".new"
-    tmp_target = target_dir / tmp_name
+    tmp_target = target_dir / (target.name + ".new")
 
-    # remove stale tmp if present
+    # cleanup any stale tmp
     try:
         if tmp_target.exists():
             tmp_target.unlink()
     except Exception:
         pass
 
+    # place the downloaded exe next to the running exe
     try:
-        # copy new exe to target dir (may fail if no write permission)
         shutil.copy2(str(exe_path), str(tmp_target))
-    except PermissionError as e:
-        # cannot write .new in target dir -> escalate immediately
-        if os.name == "nt":
-            # call elevated helper to copy+replace
-            _elevated_replace(exe_path, target)
-            return
-        raise
+    except Exception as e:
+        raise RuntimeError(f"failed to copy update file next to target ({tmp_target}): {e}") from e
 
-    # try atomic replace
+    # fast atomic replace attempt
     try:
         os.replace(str(tmp_target), str(target))
-        return
-    except PermissionError:
-        # maybe file locked by running process; try elevated helper which will wait and replace
-        if os.name == "nt":
-            try:
-                _elevated_replace(exe_path, target)
-                return
-            except Exception as e:
-                # ensure tmp file cleaned and re-raise with context
-                try:
-                    if tmp_target.exists():
-                        tmp_target.unlink()
-                except Exception:
-                    pass
-                raise PermissionError(f"elevated replacement failed: {e}") from e
-        # non-Windows fallback: re-raise
-        raise
-    except Exception as e:
-        # cleanup and re-raise
+        # start the replaced exe
+        subprocess.Popen([str(target)], close_fds=True)
+        sys.exit(0)
+    except Exception:
+        # Determine if we need elevation to move into the target directory
+        need_elev = not _is_writable_dir(target_dir)
         try:
-            if tmp_target.exists():
-                tmp_target.unlink()
-        except Exception:
-            pass
-        raise
+            _spawn_windows_replace_batch(tmp_target, target, elevate=need_elev)
+            # exit current process so the batch can complete the move
+            sys.exit(0)
+        except Exception as e:
+            # cleanup and surface error
+            try:
+                if tmp_target.exists():
+                    tmp_target.unlink()
+            except Exception:
+                pass
+            raise RuntimeError(f"failed to schedule replacement batch: {e}") from e
 
 # high-level orchestrator (safe skeleton)
 def perform_update_flow(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
