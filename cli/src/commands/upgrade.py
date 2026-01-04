@@ -42,7 +42,7 @@ def upgrade_cmd(check_only: bool, assume_yes: bool, force: bool) -> None:
         token = os.environ.get("GITHUB_TOKEN")
         try:
             result = _updater.perform_update_flow(token=token, assume_yes=assume_yes)
-            click.secho(f"Updated to {result.get('version')} (asset {result.get('asset')})", fg="green", bold=True)
+            click.secho(f"Updated to {result.get('version')}", fg="green", bold=True)
         except Exception as e:
             click.secho(f"Upgrade failed: {type(e).__name__}: {e}", fg="red", err=True)
             raise SystemExit(2)
