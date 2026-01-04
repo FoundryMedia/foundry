@@ -5,6 +5,8 @@ node_modules/
 bin/
 dist/
 lib/
+package/
+build/
 
 # Logs
 npm-debug.log*
@@ -12,16 +14,28 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 
+# Python
+__pycache__/
+.venv/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+*.spec
+requirements-dev.txt
+
 # TypeScript
 *.tsbuildinfo
 
 # Env files
+VERSION
 .env
 .env.*.local
 
 # OS
 .DS_Store
 Thumbs.db
+*.iss
 
 # Editors
 .vscode/
