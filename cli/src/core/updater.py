@@ -3,13 +3,13 @@ import os
 import sys
 import shutil
 import tempfile
-import zipfile
+import subprocess
+import time
+import hashlib
+import platform
 import urllib.request
 import urllib.error
 import json
-import hashlib
-import platform
-import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -133,45 +133,54 @@ def install_onedir(zip_path: Path, dest_dir: Path) -> None:
 
 def _elevated_replace(src: Path, target: Path, timeout: int = 120) -> None:
     """
-    On Windows: run a small helper script elevated (RunAs) that copies src -> target.new
-    then os.replace to atomically swap. Waits for completion and raises on failure.
+    Elevated helper: copy `src` to `target`.new in target dir, then wait for target to be replaceable
+    and perform os.replace. Runs the helper elevated via PowerShell and waits for it to finish.
     """
     if os.name != "nt":
-        raise PermissionError("elevation helper only implemented on Windows")
+        raise PermissionError("elevated replace only implemented for Windows")
 
-    # create helper script
+    # prepare helper script that will run elevated
     tmpdir = Path(tempfile.mkdtemp(prefix="foundry-elev-"))
-    script = tmpdir / "replace_elevated.py"
+    script = tmpdir / "foundry_replace_elevated.py"
     script.write_text(
-        "import sys, shutil, os\n"
-        "src = sys.argv[1]\n"
-        "tgt = sys.argv[2]\n"
+        "import sys, shutil, os, time\n"
+        "src, tgt, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3])\n"
+        "tgt_new = tgt + '.new'\n"
         "try:\n"
-        "    # copy then atomic replace\n"
-        "    shutil.copy2(src, tgt + '.new')\n"
-        "    os.replace(tgt + '.new', tgt)\n"
-        "    sys.exit(0)\n"
+        "    # copy into the target directory (overwrite if exists)\n"
+        "    shutil.copy2(src, tgt_new)\n"
+        "    # wait for target to be replaceable (file released) up to timeout\n"
+        "    deadline = time.time() + timeout\n"
+        "    while time.time() < deadline:\n"
+        "        try:\n"
+        "            # attempt atomic replace\n"
+        "            os.replace(tgt_new, tgt)\n"
+        "            sys.exit(0)\n"
+        "        except PermissionError:\n"
+        "            time.sleep(0.3)\n"
+        "    # final attempt, will raise\n"
+        "    os.replace(tgt_new, tgt)\n"
         "except Exception as e:\n"
-        "    print('ELEVATED_REPLACE_FAILED:', e)\n"
+        "    # best-effort cleanup\n"
+        "    try:\n"
+        "        if os.path.exists(tgt_new):\n"
+        "            os.remove(tgt_new)\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    print('ELEVATED_REPLACE_ERROR:', e)\n"
         "    sys.exit(2)\n",
         encoding="utf-8",
     )
 
-    # Build PowerShell Start-Process command to run elevated and wait
     py = sys.executable
-    src_s = str(src)
-    tgt_s = str(target)
-    # Note: wrap paths in double quotes for PowerShell command string
-    ps_cmd = (
-        f'Start-Process -FilePath "{py}" -ArgumentList "{script}","{src_s}","{tgt_s}" -Verb RunAs -Wait'
-    )
+    # Build PowerShell Start-Process command to run elevated and wait
+    cmd_args = f'"{script}","{str(src)}","{str(target)}","{timeout}"'
+    ps_cmd = f'Start-Process -FilePath "{py}" -ArgumentList {cmd_args} -Verb RunAs -Wait'
 
     proc = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-        timeout=timeout,
+        timeout=timeout + 30,
     )
-    if proc.returncode != 0:
-        raise PermissionError(f"elevated replacement failed (code {proc.returncode})")
     # cleanup
     try:
         script.unlink()
@@ -179,21 +188,67 @@ def _elevated_replace(src: Path, target: Path, timeout: int = 120) -> None:
     except Exception:
         pass
 
+    if proc.returncode != 0:
+        raise PermissionError(f"elevated replacement failed (return code {proc.returncode})")
+
 def install_onefile(exe_path: Path) -> None:
-    """Replace current running exe with new exe. May require elevation if in Program Files."""
-    exe_target = Path(sys.executable).resolve()
-    tmp_target = exe_target.with_suffix(".new.exe")
+    """
+    Replace running onefile exe with downloaded exe.
+    Strategy:
+      - copy new exe to <target>.new in the same folder
+      - try os.replace to swap in place
+      - on PermissionError or if target is locked, invoke elevated helper which waits and replaces
+    """
+    target = Path(sys.executable).resolve()
+    target_dir = target.parent
+    tmp_name = target.name + ".new"
+    tmp_target = target_dir / tmp_name
+
+    # remove stale tmp if present
     try:
+        if tmp_target.exists():
+            tmp_target.unlink()
+    except Exception:
+        pass
+
+    try:
+        # copy new exe to target dir (may fail if no write permission)
         shutil.copy2(str(exe_path), str(tmp_target))
-        os.replace(str(tmp_target), str(exe_target))
+    except PermissionError as e:
+        # cannot write .new in target dir -> escalate immediately
+        if os.name == "nt":
+            # call elevated helper to copy+replace
+            _elevated_replace(exe_path, target)
+            return
+        raise
+
+    # try atomic replace
+    try:
+        os.replace(str(tmp_target), str(target))
+        return
     except PermissionError:
-        # If on Windows, try an elevated helper to perform the atomic replace
+        # maybe file locked by running process; try elevated helper which will wait and replace
         if os.name == "nt":
             try:
-                _elevated_replace(exe_path, exe_target)
+                _elevated_replace(exe_path, target)
                 return
             except Exception as e:
-                raise PermissionError(f"elevated update attempt failed: {e}") from e
+                # ensure tmp file cleaned and re-raise with context
+                try:
+                    if tmp_target.exists():
+                        tmp_target.unlink()
+                except Exception:
+                    pass
+                raise PermissionError(f"elevated replacement failed: {e}") from e
+        # non-Windows fallback: re-raise
+        raise
+    except Exception as e:
+        # cleanup and re-raise
+        try:
+            if tmp_target.exists():
+                tmp_target.unlink()
+        except Exception:
+            pass
         raise
 
 # high-level orchestrator (safe skeleton)
