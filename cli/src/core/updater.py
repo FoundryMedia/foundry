@@ -12,7 +12,7 @@ import urllib.request
 import urllib.error
 import json
 from pathlib import Path
-from typing import Optional, Dict, Any
+from typing import Optional, Dict, Any, Sequence
 
 GITHUB_API = "https://api.github.com"
 
@@ -117,7 +117,7 @@ def install_onedir(zip_path: Path, dest_dir: Path) -> None:
         shutil.move(str(tmp), str(dest_dir))
         # cleanup backup on success could be done later
     except PermissionError:
-        # try elevated helper on Windows
+        # try elevated sidecar on Windows
         if os.name == "nt":
             try:
                 _elevated_install_onedir(zip_path, dest_dir)
@@ -134,13 +134,13 @@ def install_onedir(zip_path: Path, dest_dir: Path) -> None:
 
 def _elevated_replace(src: Path, target: Path, timeout: int = 120) -> None:
     """
-    Elevated helper: copy `src` to `target`.new in target dir, then wait for target to be replaceable
-    and perform os.replace. Runs the helper elevated via PowerShell and waits for it to finish.
+    Elevated sidecar: copy `src` to `target`.new in target dir, then wait for target to be replaceable
+    and perform os.replace. Runs the sidecar elevated via PowerShell and waits for it to finish.
     """
     if os.name != "nt":
         raise PermissionError("elevated replace only implemented for Windows")
 
-    # prepare helper script that will run elevated
+    # prepare sidecar script that will run elevated
     tmpdir = Path(tempfile.mkdtemp(prefix="foundry-elev-"))
     script = tmpdir / "foundry_replace_elevated.py"
     script.write_text(
@@ -192,54 +192,81 @@ def _elevated_replace(src: Path, target: Path, timeout: int = 120) -> None:
     if proc.returncode != 0:
         raise PermissionError(f"elevated replacement failed (return code {proc.returncode})")
 
+
+def _is_under_program_files(path: Path) -> bool:
+    if os.name != "nt":
+        return False
+    roots = [
+        os.environ.get("ProgramFiles"),
+        os.environ.get("ProgramFiles(x86)"),
+        os.environ.get("ProgramW6432"),
+    ]
+    path = path.resolve()
+    for root in filter(None, roots):
+        try:
+            root_path = Path(root).resolve()
+        except Exception:
+            continue
+        if root_path == path or root_path in path.parents:
+            return True
+    return False
+
+
+def _build_sidecar_args(src: Path, target: Path, timeout: int, relaunch: bool) -> list[str]:
+    args = [
+        "--updater-sidecar",
+        "--src",
+        str(src),
+        "--target",
+        str(target),
+        "--timeout",
+        str(timeout),
+    ]
+    if relaunch:
+        args.append("--relaunch")
+    return args
+
+
+def _spawn_sidecar_process(exe: Path, args: Sequence[str]) -> None:
+    if os.name == "nt":
+        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
+        subprocess.Popen([str(exe), *args], close_fds=True, creationflags=creationflags)
+        return
+    subprocess.Popen([str(exe), *args], close_fds=True, start_new_session=True)
+
+
+def _spawn_sidecar_elevated(exe: Path, args: Sequence[str]) -> None:
+    if os.name != "nt":
+        _spawn_sidecar_process(exe, args)
+        return
+    quoted_args = ", ".join(f'"{arg}"' for arg in args)
+    ps_cmd = f'Start-Process -FilePath "{exe}" -ArgumentList {quoted_args} -Verb RunAs'
+    subprocess.Popen(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+        close_fds=True,
+        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+    )
+
+
 def install_onefile(exe_path: Path) -> None:
     """
     Replace the running onefile exe with downloaded exe.
 
     Strategy:
-      - copy downloaded exe to <running>.new next to running exe
-      - try os.replace
-      - if replace fails, spawn detached batch that loops until move succeeds then starts new exe.
-      - if target dir not writable, spawn the batch elevated so it can write into Program Files.
+      - download asset to temp
+      - spawn updater sidecar (detached)
+      - exit immediately so the running exe can be replaced
     """
     target = Path(sys.executable).resolve()
-    target_dir = target.parent
-    tmp_target = target_dir / (target.name + ".new")
-
-    # cleanup any stale tmp
+    sidecar_args = _build_sidecar_args(exe_path, target, timeout=120, relaunch=True)
     try:
-        if tmp_target.exists():
-            tmp_target.unlink()
-    except Exception:
-        pass
-
-    # place the downloaded exe next to the running exe
-    try:
-        shutil.copy2(str(exe_path), str(tmp_target))
+        if _is_under_program_files(target):
+            _spawn_sidecar_elevated(target, sidecar_args)
+        else:
+            _spawn_sidecar_process(target, sidecar_args)
     except Exception as e:
-        raise RuntimeError(f"failed to copy update file next to target ({tmp_target}): {e}") from e
-
-    # fast atomic replace attempt
-    try:
-        os.replace(str(tmp_target), str(target))
-        # start the replaced exe
-        subprocess.Popen([str(target)], close_fds=True)
-        sys.exit(0)
-    except Exception:
-        # Determine if we need elevation to move into the target directory
-        need_elev = not _is_writable_dir(target_dir)
-        try:
-            _spawn_windows_replace_batch(tmp_target, target, elevate=need_elev)
-            # exit current process so the batch can complete the move
-            sys.exit(0)
-        except Exception as e:
-            # cleanup and surface error
-            try:
-                if tmp_target.exists():
-                    tmp_target.unlink()
-            except Exception:
-                pass
-            raise RuntimeError(f"failed to schedule replacement batch: {e}") from e
+        raise RuntimeError(f"failed to spawn updater sidecar: {e}") from e
+    sys.exit(0)
 
 # high-level orchestrator (safe skeleton)
 def execute_update(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
