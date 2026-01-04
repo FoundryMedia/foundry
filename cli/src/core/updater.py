@@ -1,13 +1,15 @@
 from __future__ import annotations
 import os
 import sys
-import json
-import tempfile
 import shutil
-import hashlib
-import platform
+import tempfile
+import zipfile
 import urllib.request
 import urllib.error
+import json
+import hashlib
+import platform
+import subprocess
 from pathlib import Path
 from typing import Optional, Dict, Any
 
@@ -113,6 +115,15 @@ def install_onedir(zip_path: Path, dest_dir: Path) -> None:
             shutil.move(str(dest_dir), str(backup))
         shutil.move(str(tmp), str(dest_dir))
         # cleanup backup on success could be done later
+    except PermissionError:
+        # try elevated helper on Windows
+        if os.name == "nt":
+            try:
+                _elevated_install_onedir(zip_path, dest_dir)
+                return
+            except Exception as e:
+                raise PermissionError(f"elevated onedir install failed: {e}") from e
+        raise
     finally:
         if tmp.exists():
             try:
@@ -120,14 +131,70 @@ def install_onedir(zip_path: Path, dest_dir: Path) -> None:
             except Exception:
                 pass
 
+def _elevated_replace(src: Path, target: Path, timeout: int = 120) -> None:
+    """
+    On Windows: run a small helper script elevated (RunAs) that copies src -> target.new
+    then os.replace to atomically swap. Waits for completion and raises on failure.
+    """
+    if os.name != "nt":
+        raise PermissionError("elevation helper only implemented on Windows")
+
+    # create helper script
+    tmpdir = Path(tempfile.mkdtemp(prefix="foundry-elev-"))
+    script = tmpdir / "replace_elevated.py"
+    script.write_text(
+        "import sys, shutil, os\n"
+        "src = sys.argv[1]\n"
+        "tgt = sys.argv[2]\n"
+        "try:\n"
+        "    # copy then atomic replace\n"
+        "    shutil.copy2(src, tgt + '.new')\n"
+        "    os.replace(tgt + '.new', tgt)\n"
+        "    sys.exit(0)\n"
+        "except Exception as e:\n"
+        "    print('ELEVATED_REPLACE_FAILED:', e)\n"
+        "    sys.exit(2)\n",
+        encoding="utf-8",
+    )
+
+    # Build PowerShell Start-Process command to run elevated and wait
+    py = sys.executable
+    src_s = str(src)
+    tgt_s = str(target)
+    # Note: wrap paths in double quotes for PowerShell command string
+    ps_cmd = (
+        f'Start-Process -FilePath "{py}" -ArgumentList "{script}","{src_s}","{tgt_s}" -Verb RunAs -Wait'
+    )
+
+    proc = subprocess.run(
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+        timeout=timeout,
+    )
+    if proc.returncode != 0:
+        raise PermissionError(f"elevated replacement failed (code {proc.returncode})")
+    # cleanup
+    try:
+        script.unlink()
+        tmpdir.rmdir()
+    except Exception:
+        pass
+
 def install_onefile(exe_path: Path) -> None:
     """Replace current running exe with new exe. May require elevation if in Program Files."""
     exe_target = Path(sys.executable).resolve()
     tmp_target = exe_target.with_suffix(".new.exe")
-    # move downloaded into place then atomic rename
-    shutil.copy2(str(exe_path), str(tmp_target))
-    # On Windows, replace needs os.replace to be atomic
-    os.replace(str(tmp_target), str(exe_target))
+    try:
+        shutil.copy2(str(exe_path), str(tmp_target))
+        os.replace(str(tmp_target), str(exe_target))
+    except PermissionError:
+        # If on Windows, try an elevated helper to perform the atomic replace
+        if os.name == "nt":
+            try:
+                _elevated_replace(exe_path, exe_target)
+                return
+            except Exception as e:
+                raise PermissionError(f"elevated update attempt failed: {e}") from e
+        raise
 
 # high-level orchestrator (safe skeleton)
 def perform_update_flow(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
@@ -178,6 +245,25 @@ def perform_update_flow(repo: str = "FoundryMedia/foundry", token: Optional[str]
     elif pkg == "onefile":
         install_onefile(dl)
     else:
-        raise RuntimeError("auto-update not supported for source installs; run pip install/update manually")
+        # Running from source: offer to install the downloaded onedir into a user-specified directory
+        default_dest = Path.cwd() / "foundry-upgrade-test"
+        if assume_yes:
+            dest = default_dest
+        else:
+            prompt = (
+                "Detected running from source (no automatic in-place upgrade).\n"
+                f"Enter directory where to install the onedir (will be created) [{default_dest}]: "
+            )
+            resp = input(prompt).strip()
+            if resp.lower() in ("", "y", "yes"):
+                dest = default_dest
+            elif resp.lower() in ("n", "no", "cancel", "q"):
+                raise RuntimeError("user cancelled upgrade")
+            else:
+                dest = Path(os.path.expanduser(resp))
+
+        dest.mkdir(parents=True, exist_ok=True)
+        _downloaded_target = dl  # zip file path
+        install_onedir(_downloaded_target, dest)
 
     return {"version": rel.get("tag_name") or rel.get("name"), "asset": asset.get("name")}
