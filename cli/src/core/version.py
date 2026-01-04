@@ -139,7 +139,7 @@ def is_newer(local: str, remote: str) -> bool:
         return False
 
 
-def get_update_hint(repo: Optional[str] = None, timeout: float = 1.0) -> Tuple[str, Optional[str]]:
+def check_for_updates(repo: Optional[str] = None, timeout: float = 1.0) -> Tuple[str, Optional[str]]:
     """
     Returns (local_version, latest_version_or_None).
     Raises VersionError if local version cannot be determined.
