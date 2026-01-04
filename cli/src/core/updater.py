@@ -260,7 +260,11 @@ def install_onefile(exe_path: Path) -> None:
     try:
         spawn_updater_helper(target, sidecar_args, elevate=needs_elevation(target))
     except Exception as e:
-        raise RuntimeError(f"failed to spawn updater sidecar: {e}") from e
+        raise RuntimeError(
+            "failed to spawn updater helper; ensure the executable is accessible and "
+            "you have permission to launch background processes. "
+            f"helper={target} args={sidecar_args} details={e}"
+        ) from e
 
 # high-level orchestrator (safe skeleton)
 def execute_update(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
