@@ -116,14 +116,12 @@ def install_onedir(zip_path: Path, dest_dir: Path) -> None:
             shutil.move(str(dest_dir), str(backup))
         shutil.move(str(tmp), str(dest_dir))
         # cleanup backup on success could be done later
-    except PermissionError:
-        # try elevated sidecar on Windows
-        if os.name == "nt":
-            try:
-                _elevated_install_onedir(zip_path, dest_dir)
-                return
-            except Exception as e:
-                raise PermissionError(f"elevated onedir install failed: {e}") from e
+    except PermissionError as exc:
+        if os.name == "nt" and needs_elevation(dest_dir):
+            raise PermissionError(
+                "update requires elevation to write to the install directory; "
+                "rerun from an elevated shell"
+            ) from exc
         raise
     finally:
         if tmp.exists():
@@ -227,25 +225,25 @@ def _build_sidecar_args(src: Path, target: Path, timeout: int, relaunch: bool) -
     return args
 
 
-def _spawn_sidecar_process(exe: Path, args: Sequence[str]) -> None:
+def needs_elevation(target: Path) -> bool:
+    return os.name == "nt" and _is_under_program_files(target)
+
+
+def spawn_updater_helper(exe: Path, args: Sequence[str], elevate: bool) -> None:
+    if elevate and os.name == "nt":
+        quoted_args = ", ".join(f'"{arg}"' for arg in args)
+        ps_cmd = f'Start-Process -FilePath "{exe}" -ArgumentList {quoted_args} -Verb RunAs'
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
+            close_fds=True,
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
+        )
+        return
     if os.name == "nt":
         creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
         subprocess.Popen([str(exe), *args], close_fds=True, creationflags=creationflags)
         return
     subprocess.Popen([str(exe), *args], close_fds=True, start_new_session=True)
-
-
-def _spawn_sidecar_elevated(exe: Path, args: Sequence[str]) -> None:
-    if os.name != "nt":
-        _spawn_sidecar_process(exe, args)
-        return
-    quoted_args = ", ".join(f'"{arg}"' for arg in args)
-    ps_cmd = f'Start-Process -FilePath "{exe}" -ArgumentList {quoted_args} -Verb RunAs'
-    subprocess.Popen(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-        close_fds=True,
-        creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
-    )
 
 
 def install_onefile(exe_path: Path) -> None:
@@ -260,13 +258,9 @@ def install_onefile(exe_path: Path) -> None:
     target = Path(sys.executable).resolve()
     sidecar_args = _build_sidecar_args(exe_path, target, timeout=120, relaunch=True)
     try:
-        if _is_under_program_files(target):
-            _spawn_sidecar_elevated(target, sidecar_args)
-        else:
-            _spawn_sidecar_process(target, sidecar_args)
+        spawn_updater_helper(target, sidecar_args, elevate=needs_elevation(target))
     except Exception as e:
         raise RuntimeError(f"failed to spawn updater sidecar: {e}") from e
-    sys.exit(0)
 
 # high-level orchestrator (safe skeleton)
 def execute_update(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
@@ -310,12 +304,14 @@ def execute_update(repo: str = "FoundryMedia/foundry", token: Optional[str] = No
             raise RuntimeError("downloaded asset failed checksum verification")
 
     pkg = detect_packaging()
+    status = "completed"
     if pkg == "onedir":
         exe_parent = Path(sys.executable).resolve().parent
         dest = exe_parent if exe_parent.name != "" else Path.cwd()
         install_onedir(dl, dest)
     elif pkg == "onefile":
         install_onefile(dl)
+        status = "scheduled"
     else:
         # Running from source: offer to install the downloaded onedir into a user-specified directory
         default_dest = Path.cwd() / "foundry-upgrade-test"
@@ -338,4 +334,4 @@ def execute_update(repo: str = "FoundryMedia/foundry", token: Optional[str] = No
         _downloaded_target = dl  # zip file path
         install_onedir(_downloaded_target, dest)
 
-    return {"version": rel.get("tag_name") or rel.get("name"), "asset": asset.get("name")}
+    return {"version": rel.get("tag_name") or rel.get("name"), "asset": asset.get("name"), "status": status}
