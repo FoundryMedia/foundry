@@ -1,62 +1,41 @@
 from __future__ import annotations
-import os
 import click
-from typing import Optional
 
 from src.core import version as _version
-from src.core import updater as _updater
+from src.core.services import update_service as _update_service
+
 
 @click.command(name="upgrade", help="Update cli version.")
-@click.option("--check-only", is_flag=True, help="Check for updates.")
-@click.option("-y", "--yes", "assume_yes", is_flag=True, help="Assume yes for prompts.")
-@click.option("--force", is_flag=True, help="Force re-download / reinstall even if versions match.")
-def upgrade_cmd(check_only: bool, assume_yes: bool, force: bool) -> None:
+def upgrade_cmd() -> None:
     """
-    Upgrade command scaffold:
-    - Checks current local version and latest remote release.
-    - If check_only, prints results and exits.
-    - If an upgrade is available (or --force), prompts then performs the upgrade steps.
-
-    TODO: implement actual download/replace logic in a safe, atomic way.
+    Upgrade command:
+    - Uses a single check_for_updates() call.
+    - Prompts before performing the update.
     """
     try:
-        local, latest = _version.check_for_updates(timeout=1.0)
+        local, latest, release = _version.check_for_updates(timeout=1.0, include_release=True)
     except Exception as e:
         click.secho(f"Unable to determine versions: {type(e).__name__}: {e}", fg="red", err=True)
         raise SystemExit(2)
 
-    if not latest:
+    if not latest or not release:
         click.secho(f"Local: {local} — unable to determine latest remote release.", fg="yellow")
-        if check_only:
-            return
+        return
 
-    if latest and _version.is_newer(local, latest):
-        click.secho(f"Upgrade available: {local} -> {latest}", fg="green")
-        if check_only:
-            return
-        if not assume_yes:
-            if not click.confirm(f"Download and install {latest}?"):
-                click.secho("Upgrade aborted.", fg="yellow")
-                return
-        # Perform the upgrade steps
-        token = os.environ.get("GITHUB_TOKEN")
-        try:
-            result = _updater.execute_update(token=token, assume_yes=assume_yes)
-            status = result.get("status")
-            if status == "scheduled":
-                click.secho(
-                    f"Update scheduled to {result.get('version')}. Restarting to complete.",
-                    fg="green",
-                    bold=True,
-                )
-                raise SystemExit(0)
-            click.secho(f"Update complete: {result.get('version')}", fg="green", bold=True)
-        except Exception as e:
-            click.secho(f"Upgrade failed: {type(e).__name__}: {e}", fg="red", err=True)
-            raise SystemExit(2)
-    else:
-        if force:
-            click.secho(f"Forcing upgrade flow (current {local})", fg="magenta")
-            click.secho("Upgrade logic not yet implemented. This is a scaffold.", fg="cyan")
-        else:
-            click.secho(f"Already up-to-date: {local}", fg="green")
+    if not _version.is_newer(local, latest):
+        click.secho(f"Already up-to-date: {local}", fg="green")
+        return
+
+    click.secho(f"Upgrade available: {local} -> {latest}", fg="green")
+    if not click.confirm(f"Download and install {latest}?", default=False):
+        click.secho("Upgrade aborted.", fg="yellow")
+        return
+
+    try:
+        _update_service.execute_update(release)
+    except SystemExit:
+        # execute_update intentionally exits the process
+        raise
+    except Exception as e:
+        click.secho(f"Upgrade failed: {type(e).__name__}: {e}", fg="red", err=True)
+        raise SystemExit(2)
