@@ -1,341 +1,99 @@
 from __future__ import annotations
+
+import argparse
 import os
-import sys
 import shutil
-import tempfile
-import subprocess
-import stat
+import sys
 import time
-import hashlib
-import platform
-import urllib.request
-import urllib.error
-import json
 from pathlib import Path
-from typing import Optional, Dict, Any, Sequence
+from typing import List
 
-GITHUB_API = "https://api.github.com"
 
-def _api_get(url: str, token: Optional[str] = None) -> Dict[str, Any]:
-    req = urllib.request.Request(url, headers={"User-Agent": "foundry-updater/0.1", "Accept": "application/vnd.github.v3+json"})
-    if token:
-        req.add_header("Authorization", f"token {token}")
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return json.load(r)
+def _wait_for_unlock(path: Path, timeout: float = 30.0, interval: float = 0.5) -> None:
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if not path.exists():
+            return
+        try:
+            tmp = path.with_suffix(path.suffix + ".lockcheck")
+            path.rename(tmp)
+            tmp.rename(path)
+            return
+        except OSError:
+            time.sleep(interval)
 
-def _download_text(url: str, token: Optional[str] = None) -> str:
-    req = urllib.request.Request(url, headers={"User-Agent": "foundry-updater/0.1"})
-    if token:
-        req.add_header("Authorization", f"token {token}")
-    with urllib.request.urlopen(req, timeout=10) as r:
-        return r.read().decode("utf-8")
 
-def fetch_latest_release(repo: str = "FoundryMedia/foundry", token: Optional[str] = None) -> Optional[Dict[str, Any]]:
-    """Return GitHub release JSON for latest release or None (unauthenticated by default)."""
-    try:
-        return _api_get(f"{GITHUB_API}/repos/{repo}/releases/latest", token)
-    except urllib.error.HTTPError as e:
-        # keep behavior simple for public repos: return None on HTTP error (rate limit / not found / forbidden)
-        return None
-    except Exception:
-        return None
+def _copy_tree_overwrite(src_root: Path, dst_root: Path) -> None:
+    """
+    Recursively copy all files/dirs from src_root into dst_root,
+    overwriting existing files. Used to update supporting files
+    alongside the EXE.
+    """
+    for root, dirs, files in os.walk(src_root):
+        rel = Path(root).relative_to(src_root)
+        target_dir = dst_root / rel
+        target_dir.mkdir(parents=True, exist_ok=True)
 
-def _platform_key() -> str:
-    system = platform.system().lower()
-    arch = platform.machine().lower()
-    # simplify common names
-    if system.startswith("windows"):
-        sysname = "windows"
-    elif system.startswith("linux"):
-        sysname = "linux"
-    elif system.startswith("darwin"):
-        sysname = "macos"
-    else:
-        sysname = system
-    return f"{sysname}-{arch}"
+        for name in files:
+            src_file = Path(root) / name
+            dst_file = target_dir / name
+            shutil.copy2(src_file, dst_file)
 
-def choose_asset_for_current_run(release: Dict[str, Any]) -> Optional[Dict[str, Any]]:
-    """Pick best asset for this machine; expects naming convention like foundry-windows-x64.zip / .exe"""
-    key = _platform_key()
-    assets = release.get("assets", []) or []
-    # heuristics: prefer zip (onedir) or exe (onefile); allow both
-    candidates = []
-    for a in assets:
-        name = a.get("name", "").lower()
-        if key in name:
-            candidates.append(a)
-    # fallback: try name containing system only
-    if not candidates:
-        for a in assets:
-            if _platform_key().split("-")[0] in (a.get("name", "").lower()):
-                candidates.append(a)
-    # pick first candidate (could be refined)
-    return candidates[0] if candidates else None
 
-def download_asset(asset: Dict[str, Any], token: Optional[str] = None) -> Path:
-    """Download asset to temp file and return Path."""
-    url = asset.get("browser_download_url")
-    if not url:
-        raise RuntimeError("No download URL on asset")
-    fd, tmp_path = tempfile.mkstemp(suffix=Path(url).suffix)
-    os.close(fd)
-    req = urllib.request.Request(url, headers={"User-Agent": "foundry-updater/0.1"})
-    if token:
-        req.add_header("Authorization", f"token {token}")
-    with urllib.request.urlopen(req, timeout=60) as r, open(tmp_path, "wb") as out:
-        shutil.copyfileobj(r, out)
-    return Path(tmp_path)
-
-def verify_sha256(path: Path, expected_hex: str) -> bool:
-    h = hashlib.sha256()
-    with path.open("rb") as f:
-        for chunk in iter(lambda: f.read(8192), b""):
-            h.update(chunk)
-    return h.hexdigest().lower() == expected_hex.lower()
-
-def detect_packaging() -> str:
-    """Return 'source', 'onedir' or 'onefile' depending on runtime."""
-    if getattr(sys, "frozen", False):
-        # onefile sets _MEIPASS; onedir generally has exe in dist/<name> directory
-        if hasattr(sys, "_MEIPASS"):
-            return "onefile"
-        return "onedir"
-    return "source"
-
-def install_onedir(zip_path: Path, dest_dir: Path) -> None:
-    """Extract zip into temp and atomically swap dest_dir. Safe: leaves .bak on failure."""
-    import zipfile
-    tmp = Path(tempfile.mkdtemp(prefix="foundry-update-"))
-    try:
-        with zipfile.ZipFile(zip_path, "r") as z:
-            z.extractall(tmp)
-        backup = dest_dir.with_name(dest_dir.name + ".bak")
-        if dest_dir.exists():
+def _atomic_replace(src: Path, dst: Path) -> None:
+    backup = dst.with_suffix(dst.suffix + ".bak")
+    if dst.exists():
+        try:
             if backup.exists():
-                shutil.rmtree(backup)
-            shutil.move(str(dest_dir), str(backup))
-        shutil.move(str(tmp), str(dest_dir))
-        # cleanup backup on success could be done later
-    except PermissionError as exc:
-        if os.name == "nt" and needs_elevation(dest_dir):
-            raise PermissionError(
-                "update requires elevation to write to the install directory; "
-                "rerun from an elevated shell"
-            ) from exc
-        raise
-    finally:
-        if tmp.exists():
-            try:
-                shutil.rmtree(tmp)
-            except Exception:
-                pass
+                backup.unlink()
+            dst.rename(backup)
+        except OSError:
+            pass
 
-def _elevated_replace(src: Path, target: Path, timeout: int = 120) -> None:
-    """
-    Elevated sidecar: copy `src` to `target`.new in target dir, then wait for target to be replaceable
-    and perform os.replace. Runs the sidecar elevated via PowerShell and waits for it to finish.
-    """
-    if os.name != "nt":
-        raise PermissionError("elevated replace only implemented for Windows")
+    src.rename(dst)
 
-    # prepare sidecar script that will run elevated
-    tmpdir = Path(tempfile.mkdtemp(prefix="foundry-elev-"))
-    script = tmpdir / "foundry_replace_elevated.py"
-    script.write_text(
-        "import sys, shutil, os, time\n"
-        "src, tgt, timeout = sys.argv[1], sys.argv[2], int(sys.argv[3])\n"
-        "tgt_new = tgt + '.new'\n"
-        "try:\n"
-        "    # copy into the target directory (overwrite if exists)\n"
-        "    shutil.copy2(src, tgt_new)\n"
-        "    # wait for target to be replaceable (file released) up to timeout\n"
-        "    deadline = time.time() + timeout\n"
-        "    while time.time() < deadline:\n"
-        "        try:\n"
-        "            # attempt atomic replace\n"
-        "            os.replace(tgt_new, tgt)\n"
-        "            sys.exit(0)\n"
-        "        except PermissionError:\n"
-        "            time.sleep(0.3)\n"
-        "    # final attempt, will raise\n"
-        "    os.replace(tgt_new, tgt)\n"
-        "except Exception as e:\n"
-        "    # best-effort cleanup\n"
-        "    try:\n"
-        "        if os.path.exists(tgt_new):\n"
-        "            os.remove(tgt_new)\n"
-        "    except Exception:\n"
-        "        pass\n"
-        "    print('ELEVATED_REPLACE_ERROR:', e)\n"
-        "    sys.exit(2)\n",
-        encoding="utf-8",
-    )
-
-    py = sys.executable
-    # Build PowerShell Start-Process command to run elevated and wait
-    cmd_args = f'"{script}","{str(src)}","{str(target)}","{timeout}"'
-    ps_cmd = f'Start-Process -FilePath "{py}" -ArgumentList {cmd_args} -Verb RunAs -Wait'
-
-    proc = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-        timeout=timeout + 30,
-    )
-    # cleanup
     try:
-        script.unlink()
-        tmpdir.rmdir()
+        if backup.exists():
+            backup.unlink()
+    except OSError:
+        pass
+
+
+def main(argv: List[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="Foundry CLI updater stub.")
+    parser.add_argument("--old-exe", required=True, help="Path to currently installed exe.")
+    parser.add_argument("--new-exe", required=True, help="Path to new exe in staging dir.")
+    parser.add_argument("--temp-root", required=True, help="Root temp directory for this update run.")
+
+    ns = parser.parse_args(argv)
+    old_exe = Path(ns.old_exe).resolve()
+    new_exe = Path(ns.new_exe).resolve()
+    temp_root = Path(ns.temp_root).resolve()
+
+    # Wait for main process to exit and release locks
+    _wait_for_unlock(old_exe, timeout=30.0, interval=0.5)
+
+    # First copy all non-exe files over (config, libs, etc.)
+    # new_exe.parent is the root of the extracted payload
+    src_root = new_exe.parent
+    dst_root = old_exe.parent
+    _copy_tree_overwrite(src_root, dst_root)
+
+    # Then atomically replace the exe itself
+    try:
+        _atomic_replace(dst_root / new_exe.name, old_exe)
+    except Exception as e:
+        sys.stderr.write(f"Failed to replace executable: {type(e).__name__}: {e}\n")
+        return 1
+
+    # Cleanup temp
+    try:
+        shutil.rmtree(temp_root, ignore_errors=True)
     except Exception:
         pass
 
-    if proc.returncode != 0:
-        raise PermissionError(f"elevated replacement failed (return code {proc.returncode})")
+    return 0
 
 
-def _is_under_program_files(path: Path) -> bool:
-    if os.name != "nt":
-        return False
-    roots = [
-        os.environ.get("ProgramFiles"),
-        os.environ.get("ProgramFiles(x86)"),
-        os.environ.get("ProgramW6432"),
-    ]
-    path = path.resolve()
-    for root in filter(None, roots):
-        try:
-            root_path = Path(root).resolve()
-        except Exception:
-            continue
-        if root_path == path or root_path in path.parents:
-            return True
-    return False
-
-
-def _build_sidecar_args(src: Path, target: Path, timeout: int, relaunch: bool) -> list[str]:
-    args = [
-        "--updater-sidecar",
-        "--src",
-        str(src),
-        "--target",
-        str(target),
-        "--timeout",
-        str(timeout),
-    ]
-    if relaunch:
-        args.append("--relaunch")
-    return args
-
-
-def needs_elevation(target: Path) -> bool:
-    return os.name == "nt" and _is_under_program_files(target)
-
-
-def spawn_updater_helper(exe: Path, args: Sequence[str], elevate: bool) -> None:
-    if elevate and os.name == "nt":
-        quoted_args = ", ".join(f'"{arg}"' for arg in args)
-        ps_cmd = f'Start-Process -FilePath "{exe}" -ArgumentList {quoted_args} -Verb RunAs'
-        subprocess.Popen(
-            ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", ps_cmd],
-            close_fds=True,
-            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS,
-        )
-        return
-    if os.name == "nt":
-        creationflags = subprocess.CREATE_NEW_PROCESS_GROUP | subprocess.DETACHED_PROCESS
-        subprocess.Popen([str(exe), *args], close_fds=True, creationflags=creationflags)
-        return
-    subprocess.Popen([str(exe), *args], close_fds=True, start_new_session=True)
-
-
-def install_onefile(exe_path: Path) -> None:
-    """
-    Replace the running onefile exe with downloaded exe.
-
-    Strategy:
-      - download asset to temp
-      - spawn updater sidecar (detached)
-      - exit immediately so the running exe can be replaced
-    """
-    target = Path(sys.executable).resolve()
-    sidecar_args = _build_sidecar_args(exe_path, target, timeout=120, relaunch=True)
-    try:
-        spawn_updater_helper(target, sidecar_args, elevate=needs_elevation(target))
-    except Exception as e:
-        raise RuntimeError(
-            "failed to spawn updater helper; ensure the executable is accessible and "
-            "you have permission to launch background processes. "
-            f"helper={target} args={sidecar_args} details={e}"
-        ) from e
-
-# high-level orchestrator (safe skeleton)
-def execute_update(repo: str = "FoundryMedia/foundry", token: Optional[str] = None, assume_yes: bool = False) -> Dict[str, Any]:
-    """
-    Orchestrate update:
-      - fetch release metadata (unauthenticated by default)
-      - choose platform asset
-      - download optional checksum asset and verify
-      - download asset and install
-    """
-    rel = fetch_latest_release(repo=repo, token=token)
-    if not rel:
-        raise RuntimeError("unable to fetch latest release; ensure a published GitHub release exists and is reachable")
-
-    asset = choose_asset_for_current_run(rel)
-    if not asset:
-        raise RuntimeError("no suitable asset found for this platform in release")
-
-    # try to find a matching .sha256 asset (same name + ".sha256")
-    assets = rel.get("assets", []) or []
-    checksum_asset = None
-    expected_hex = None
-    desired_sha_name = asset.get("name", "") + ".sha256"
-    for a in assets:
-        if a.get("name", "") == desired_sha_name:
-            checksum_asset = a
-            break
-    if checksum_asset:
-        try:
-            txt = _download_text(checksum_asset.get("browser_download_url"), token=token).strip()
-            # common formats: "<hex>  filename" or just "<hex>"
-            expected_hex = txt.split()[0]
-        except Exception:
-            expected_hex = None
-
-    dl = download_asset(asset, token=token)
-
-    if expected_hex:
-        ok = verify_sha256(dl, expected_hex)
-        if not ok:
-            raise RuntimeError("downloaded asset failed checksum verification")
-
-    pkg = detect_packaging()
-    status = "completed"
-    if pkg == "onedir":
-        exe_parent = Path(sys.executable).resolve().parent
-        dest = exe_parent if exe_parent.name != "" else Path.cwd()
-        install_onedir(dl, dest)
-    elif pkg == "onefile":
-        install_onefile(dl)
-        status = "scheduled"
-    else:
-        # Running from source: offer to install the downloaded onedir into a user-specified directory
-        default_dest = Path.cwd() / "foundry-upgrade-test"
-        if assume_yes:
-            dest = default_dest
-        else:
-            prompt = (
-                "Detected running from source (no automatic in-place upgrade).\n"
-                f"Enter directory where to install the onedir (will be created) [{default_dest}]: "
-            )
-            resp = input(prompt).strip()
-            if resp.lower() in ("", "y", "yes"):
-                dest = default_dest
-            elif resp.lower() in ("n", "no", "cancel", "q"):
-                raise RuntimeError("user cancelled upgrade")
-            else:
-                dest = Path(os.path.expanduser(resp))
-
-        dest.mkdir(parents=True, exist_ok=True)
-        _downloaded_target = dl  # zip file path
-        install_onedir(_downloaded_target, dest)
-
-    return {"version": rel.get("tag_name") or rel.get("name"), "asset": asset.get("name"), "status": status}
+if __name__ == "__main__":
+    raise SystemExit(main())
