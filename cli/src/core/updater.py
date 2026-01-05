@@ -59,6 +59,22 @@ def _atomic_replace(src: Path, dst: Path) -> None:
         pass
 
 
+def _launch_new_cli_help(exe: Path) -> None:
+    """
+    Fire-and-forget run of `foundry --help` using the freshly updated exe.
+    """
+    try:
+        args = [str(exe), "--help"]
+        if os.name == "nt":
+            # Non-blocking; let Windows resolve console behavior
+            os.spawnv(os.P_NOWAIT, str(exe), args)
+        else:
+            os.spawnv(os.P_NOWAIT, str(exe), args)
+    except Exception:
+        # Non-fatal if we can't show help; update already applied.
+        pass
+
+
 def main(argv: List[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description="Foundry CLI updater stub.")
     parser.add_argument("--old-exe", required=True, help="Path to currently installed exe.")
@@ -85,6 +101,9 @@ def main(argv: List[str] | None = None) -> int:
     except Exception as e:
         sys.stderr.write(f"Failed to replace executable: {type(e).__name__}: {e}\n")
         return 1
+
+    # Auto-run the updated CLI with --help so the user sees the new version
+    _launch_new_cli_help(old_exe)
 
     # Cleanup temp
     try:
