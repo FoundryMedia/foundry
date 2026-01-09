@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 import urllib.request
 from pathlib import Path
@@ -12,6 +13,15 @@ from foundry_cli.core.versioning import get_local_version
 
 LATEST_URL = "https://api.github.com/repos/FoundryMedia/foundry/releases/latest"
 CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
+
+_SEMVER_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?\s*$")
+
+
+def _parse_semver(v: str) -> tuple[int, int, int] | None:
+    m = _SEMVER_RE.match(v)
+    if not m:
+        return None
+    return int(m.group(1)), int(m.group(2)), int(m.group(3))
 
 
 def _cache_file() -> Path:
@@ -34,7 +44,15 @@ def _write_cache(path: Path, payload: dict) -> None:
     path.write_text(json.dumps(payload), encoding="utf-8")
 
 
-def _fetch_latest_tag() -> str | None:
+def _normalize_tag(tag: str) -> str:
+    return tag[1:] if tag.startswith(("v", "V")) else tag
+
+
+def _fetch_latest_release() -> dict | None:
+    """
+    Returns:
+      {"tag": "v0.3.1", "latest": "0.3.1", "url": "<html_url>"}
+    """
     req = urllib.request.Request(
         LATEST_URL,
         headers={
@@ -44,37 +62,70 @@ def _fetch_latest_tag() -> str | None:
     )
     with urllib.request.urlopen(req, timeout=3) as resp:
         body = resp.read().decode("utf-8")
+
     data = json.loads(body)
     tag = data.get("tag_name")
-    return tag if isinstance(tag, str) else None
+    url = data.get("html_url")
 
+    if not isinstance(tag, str):
+        return None
 
-def _normalize_tag(tag: str) -> str:
-    return tag[1:] if tag.startswith(("v", "V")) else tag
+    latest = _normalize_tag(tag)
 
+    return {
+        "tag": tag,
+        "latest": latest,
+        "url": url if isinstance(url, str) else None,
+    }
 
-def check_for_updates() -> None:
+def check_for_updates() -> tuple[str, str, str | None] | None:
     """
     Notify only. Do not block CLI behavior if network fails.
+    Only notify when latest > local.
+
+    Returns:
+        (local_version, latest_version, url) if an update is available,
+        otherwise None.
     """
     local = get_local_version()
 
     cache_path = _cache_file()
     cached = _read_cache(cache_path)
+
     if cached and "latest" in cached:
-        latest = str(cached["latest"])
+        latest = str(cached.get("latest") or "")
+        url = cached.get("url")
+        url = url if isinstance(url, str) else None
     else:
         try:
-            tag = _fetch_latest_tag()
-            latest = _normalize_tag(tag) if tag else ""
-            _write_cache(cache_path, {"checked_at": time.time(), "latest": latest})
+            rel = _fetch_latest_release()
+            if not rel:
+                return None
+            latest = str(rel["latest"])
+            url = rel.get("url")
+            _write_cache(
+                cache_path,
+                {
+                    "checked_at": time.time(),
+                    "latest": latest,
+                    "tag": rel.get("tag"),
+                    "url": url,
+                },
+            )
         except Exception:
-            return
+            return None
 
-    # note: local version resolution is fatal by design; if we got here it's valid.
-    if latest and latest != local:
-        click.echo(
-            f"Update available: {local} → {latest}\n"
-            f"Run the latest MSI installer from GitHub Releases to upgrade.",
-            err=True,
-        )
+    if not latest:
+        return None
+
+    local_v = _parse_semver(local)
+    latest_v = _parse_semver(latest)
+
+    # If we can't parse versions reliably, don't spam users.
+    if local_v is None or latest_v is None:
+        return None
+
+    if latest_v > local_v:
+        return local, latest, url
+
+    return None
