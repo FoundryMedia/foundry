@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foundry-cli"
-version = "0.3.1"
+version = "0.4.0"
 description = "Foundry CLI - run and manage platform apps"
 authors = [{name="Foundry"}]
 requires-python = ">=3.9"
@@ -14,4 +14,11 @@ dependencies = [
 ]
 
 [project.scripts]
-foundry = "src.main:cli"
+foundry = "foundry_cli.cli:cli"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["foundry_cli*"]
+
+[tool.setuptools.package-data]
+foundry_cli = ["resources/VERSION"]
