@@ -9,7 +9,7 @@ from pathlib import Path
 
 import click
 
-from foundry_cli.core.versioning import get_local_version
+from foundry_cli.release.versioning import get_local_version
 
 LATEST_URL = "https://api.github.com/repos/FoundryMedia/foundry/releases/latest"
 CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
@@ -78,18 +78,9 @@ def _fetch_latest_release() -> dict | None:
         "url": url if isinstance(url, str) else None,
     }
 
+
 def check_for_updates() -> tuple[str, str | None, str | None]:
-    """
-    Notify only. Do not block CLI behavior if network fails.
-
-    Returns:
-        (local_version, latest_version_or_none, url_or_none)
-
-    Notes:
-        - Always returns the local version so callers don't need to call
-          get_local_version() separately.
-        - latest/url are None when no update is available or when checks fail.
-    """
+    """Return (local_version, latest_version_or_none, url_or_none)."""
     local = get_local_version()
 
     cache_path = _cache_file()
@@ -119,7 +110,6 @@ def check_for_updates() -> tuple[str, str | None, str | None]:
                     },
                 )
         except Exception:
-            # Don't block CLI
             return local, None, None
 
     if not latest:
@@ -128,7 +118,6 @@ def check_for_updates() -> tuple[str, str | None, str | None]:
     local_v = _parse_semver(local)
     latest_v = _parse_semver(latest)
 
-    # If we can't parse versions reliably, don't spam users.
     if local_v is None or latest_v is None:
         return local, None, None
 
