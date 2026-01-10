@@ -78,54 +78,61 @@ def _fetch_latest_release() -> dict | None:
         "url": url if isinstance(url, str) else None,
     }
 
-def check_for_updates() -> tuple[str, str, str | None] | None:
+def check_for_updates() -> tuple[str, str | None, str | None]:
     """
     Notify only. Do not block CLI behavior if network fails.
-    Only notify when latest > local.
 
     Returns:
-        (local_version, latest_version, url) if an update is available,
-        otherwise None.
+        (local_version, latest_version_or_none, url_or_none)
+
+    Notes:
+        - Always returns the local version so callers don't need to call
+          get_local_version() separately.
+        - latest/url are None when no update is available or when checks fail.
     """
     local = get_local_version()
 
     cache_path = _cache_file()
     cached = _read_cache(cache_path)
 
+    latest: str | None = None
+    url: str | None = None
+
     if cached and "latest" in cached:
-        latest = str(cached.get("latest") or "")
-        url = cached.get("url")
-        url = url if isinstance(url, str) else None
+        latest_val = str(cached.get("latest") or "").strip()
+        latest = latest_val or None
+        url_val = cached.get("url")
+        url = url_val if isinstance(url_val, str) else None
     else:
         try:
             rel = _fetch_latest_release()
-            if not rel:
-                return None
-            latest = str(rel["latest"])
-            url = rel.get("url")
-            _write_cache(
-                cache_path,
-                {
-                    "checked_at": time.time(),
-                    "latest": latest,
-                    "tag": rel.get("tag"),
-                    "url": url,
-                },
-            )
+            if rel:
+                latest = str(rel["latest"]).strip() or None
+                url = rel.get("url")
+                _write_cache(
+                    cache_path,
+                    {
+                        "checked_at": time.time(),
+                        "latest": latest,
+                        "tag": rel.get("tag"),
+                        "url": url,
+                    },
+                )
         except Exception:
-            return None
+            # Don't block CLI
+            return local, None, None
 
     if not latest:
-        return None
+        return local, None, None
 
     local_v = _parse_semver(local)
     latest_v = _parse_semver(latest)
 
     # If we can't parse versions reliably, don't spam users.
     if local_v is None or latest_v is None:
-        return None
+        return local, None, None
 
     if latest_v > local_v:
         return local, latest, url
 
-    return None
+    return local, None, None
