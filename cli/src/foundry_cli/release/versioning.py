@@ -3,7 +3,7 @@ from __future__ import annotations
 from importlib import metadata
 from pathlib import Path
 
-from foundry_cli.core.runtime import resources_dir
+from foundry_cli.core.runtime import version_file_candidates
 
 PACKAGE_NAME = "foundry-cli"
 
@@ -29,12 +29,12 @@ def get_local_version() -> str:
     except metadata.PackageNotFoundError:
         pass
 
-    # 2) VERSION file
-    vfile: Path = resources_dir() / "VERSION"
-    if vfile.exists():
-        version = vfile.read_text(encoding="utf-8").strip()
-        if version:
-            return version
+    # 2) VERSION file (packaged exe OR source/package-data)
+    for vfile in version_file_candidates():
+        if vfile.exists():
+            version = vfile.read_text(encoding="utf-8").strip()
+            if version:
+                return version
 
     # 3) Fatal: corrupted install
     raise VersionResolutionError(

@@ -1,26 +1,35 @@
 from __future__ import annotations
 
-import sys
 from pathlib import Path
-
-
-def is_frozen() -> bool:
-    # PyInstaller sets sys.frozen = True and sys._MEIPASS
-    return bool(getattr(sys, "frozen", False))
-
-
-def base_dir() -> Path:
-    """
-    Returns a stable base directory:
-    - Frozen: directory containing the executable
-    - Source/installed: package directory
-    """
-    if is_frozen():
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parent.parent  # .../foundry_cli
+import sys
 
 
 def resources_dir() -> Path:
-    if is_frozen():
-        return base_dir()
-    return base_dir() / "resources"
+	"""Return the folder containing packaged resources (e.g. VERSION)."""
+	# `resources` is shipped as package data, so it lives beside this file.
+	return Path(__file__).resolve().parent.parent / "resources"
+
+
+def exe_dir() -> Path:
+	"""Return the directory containing the running executable.
+
+	In normal Python execution this is typically the Python install/venv folder.
+	In a Windows packaged build (e.g. PyInstaller), this is the folder containing
+	the shipped `foundry.exe`.
+	"""
+	return Path(sys.executable).resolve().parent
+
+
+def version_file_candidates() -> list[Path]:
+	"""Return possible VERSION file locations, in priority order.
+
+	We prioritize packaged Windows installs where VERSION is placed next to the
+	executable, then fall back to the source/package-data location.
+	"""
+	return [
+		exe_dir() / "VERSION",
+		resources_dir() / "VERSION",
+	]
+
+
+__all__ = ["resources_dir", "exe_dir", "version_file_candidates"]

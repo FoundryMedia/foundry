@@ -2,58 +2,12 @@ from __future__ import annotations
 
 import click
 
-from foundry_cli.core.errors import FoundryError, StyledClickException
-from foundry_cli.core.update_check import check_for_updates
-from foundry_cli.core.versioning import get_local_version, VersionResolutionError
+from foundry_cli.core.cli import FoundryGroup
+from foundry_cli.core.errors import FoundryError
+from foundry_cli.release.update_check import check_for_updates
+from foundry_cli.release.versioning import get_local_version, VersionResolutionError
 
 from foundry_cli.commands.run import run
-
-class FoundryGroup(click.Group):
-    """Click Group that styles usage/click errors and suppresses default Usage output."""
-
-    def main(self, *args, **kwargs):
-        kwargs.setdefault("standalone_mode", False)
-        try:
-            return super().main(*args, **kwargs)
-
-        except click.UsageError as e:
-            # Build a colored Usage line in the exact format you want
-            prog = e.ctx.command_path if getattr(e, "ctx", None) else (self.name or "foundry")
-
-            usage_pieces = [
-                click.style("Usage:", fg="yellow", bold=True),
-                click.style(prog, fg="blue", bold=True),
-                click.style("[OPTIONS]", fg="blue"),
-                click.style("COMMAND", fg="cyan", bold=True),
-                click.style("[ARGS]...", fg="cyan"),
-            ]
-
-            print(" ".join(usage_pieces))
-            print(
-                click.style("Error:", fg="red", bold=True)
-                + " "
-                + click.style(e.format_message(), fg="bright_red")
-            )
-            raise SystemExit(2)
-
-        except click.ClickException as e:
-            print(
-                click.style("Error:", fg="red", bold=True)
-                + " "
-                + click.style(e.format_message(), fg="red")
-            )
-            raise SystemExit(1)
-
-        except click.exceptions.Exit:
-            raise
-
-        except FoundryError as e:
-            print(
-                click.style("Error:", fg="red", bold=True)
-                + " "
-                + click.style(str(e), fg="red")
-            )
-            raise SystemExit(1)
 
 def register_commands(root: click.Group) -> None:
     root.add_command(run)
@@ -158,7 +112,13 @@ def cli(ctx: click.Context, version: bool, show_help: bool) -> None:
         display_help(ctx)
 
     except FoundryError as e:
-        raise StyledClickException(str(e)) from e
+        print(
+            click.style("Error:", fg="red", bold=True)
+            + " "
+            + click.style(str(e), fg="red")
+            + click.style("", reset=True)
+        )
+        raise SystemExit(1)
     
 register_commands(cli)
 
