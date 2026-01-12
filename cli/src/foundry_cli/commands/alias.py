@@ -16,22 +16,6 @@ def alias() -> None:
     """Manage Foundry command aliases."""
 
 
-@alias.command("init", hidden=True)
-@click.option(
-    "--bin-dir",
-    type=click.Path(path_type=str, file_okay=False, dir_okay=True),
-    default=None,
-    help="Where to write alias shims (defaults to packaged dir, env Scripts dir, or LOCALAPPDATA).",
-)
-def init_aliases(bin_dir: str | None) -> None:
-    """Initialize alias support (creates alias bin directory)."""
-    d = (click.Path(path_type=str).convert(bin_dir, None, None) if bin_dir else None)
-    d_path = Path(d) if d else alias_bin_dir()
-    d_path.mkdir(parents=True, exist_ok=True)
-    print(f"Alias bin: {d_path}")
-    print("Add this folder to your PATH to use aliases from source installs.")
-
-
 @alias.command("list")
 def list_aliases() -> None:
     """List configured aliases."""
@@ -94,19 +78,6 @@ def remove_alias_cmd(bin_dir: str | None, name: str) -> None:
     remove_alias(name)
     remove_shim(name, bin_dir=Path(bin_dir) if bin_dir else None)
     print(f"Removed alias '{name}'.")
-
-
-@alias.command("exec", hidden=True)
-@click.argument("name")
-@click.argument("args", nargs=-1)
-def exec_alias_cmd(name: str, args: tuple[str, ...]) -> None:
-    """Internal: used by .cmd shims to execute an alias.
-
-    This command is not intended to be called directly by users.
-    """
-    # Execution is handled via argv expansion before Click parsing.
-    # If we got here, no alias existed.
-    raise FoundryError(f"Alias not found: {name}")
 
 
 __all__ = ["alias"]

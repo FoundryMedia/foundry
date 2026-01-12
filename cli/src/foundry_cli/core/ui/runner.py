@@ -1,15 +1,26 @@
+# -*- coding: utf-8 -*-
 from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from datetime import datetime
 from typing import Dict, Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
 from textual.widgets import Footer, Label, ListItem, ListView, RichLog
+from rich.ansi import AnsiDecoder
+from rich.text import Text
 
 from foundry_cli.core.project.workspace import DiscoveredService
-from foundry_cli.core.services.runner import ServiceLogEvent, ServiceRunner
+from foundry_cli.core.services.service_runner import (
+    ServiceLogEvent,
+    ServiceRunner,
+    ServiceStatus,
+    ServiceStatusEvent,
+)
+
+from foundry_cli.core.ui.logger import LogLine, format_log_line
 
 
 @dataclass(frozen=True)
@@ -53,6 +64,28 @@ class ServicesUI(App[None]):
         height: 1fr;
     }
 
+    /* Reduce "cursor" artifacts: keep list highlight on the row, not on sub-widgets. */
+    #services:focus .listview--highlight {
+        text-style: none;
+    }
+
+    .svc_row {
+        layout: horizontal;
+        height: 1;
+        padding: 0 1;
+    }
+
+    .svc_icon {
+    width: 3;
+        content-align: left middle;
+    }
+
+    .svc_name {
+        width: 1fr;
+        content-align: left middle;
+        color: #ffffff;
+    }
+
     #log {
         border: tall $boost;
     }
@@ -85,11 +118,18 @@ class ServicesUI(App[None]):
         self._provided_runners = runners
         self._debug = debug
 
-        self._logs: Dict[str, list[str]] = {s.name: [] for s in services}
+        self._logs: Dict[str, list[Text]] = {s.name: [] for s in services}
         self._runners: Dict[str, ServiceRunnerState] = {}
         self._selected: Optional[str] = services[0].name if services else None
 
+        # starting | healthy | failed
+        # Start in starting so the spinner shows immediately.
+        self._status: Dict[str, ServiceStatus] = {s.name: ServiceStatus.starting for s in services}
+
         self._focus: str = "list"  # list | log
+
+        self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+        self._spinner_index: int = 0
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -99,10 +139,35 @@ class ServicesUI(App[None]):
                 lv = ListView(id="services")
                 for svc in self._services:
                     safe_id = f"svc-{svc.name}".replace(" ", "-")
-                    lv.append(ListItem(Label(svc.name), id=safe_id, name=svc.name))
+                    row = Horizontal(classes="svc_row")
+                    row.mount(Label("", id=f"icon-{safe_id}", classes="svc_icon"))
+                    row.mount(Label(svc.name, id=f"name-{safe_id}", classes="svc_name"))
+                    lv.append(ListItem(row, id=safe_id, name=svc.name))
                 yield lv
-            yield RichLog(id="log", highlight=True, markup=True, wrap=False)
+            yield RichLog(id="log", highlight=False, markup=False, wrap=False)
         yield Footer()
+
+    def _update_service_label(self, service_name: str) -> None:
+        safe_id = f"svc-{service_name}".replace(" ", "-")
+        try:
+            icon_lbl = self.query_one(f"#icon-{safe_id}", Label)
+        except Exception:
+            return
+
+        st = self._status.get(service_name)
+        if st == ServiceStatus.starting:
+            frame = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
+            icon_lbl.update(frame)
+            icon_lbl.styles.color = "#3B8EEA"
+        elif st == ServiceStatus.healthy:
+            icon_lbl.update("✔")
+            icon_lbl.styles.color = "#23D18B"
+        elif st == ServiceStatus.failed:
+            icon_lbl.update("✘")
+            icon_lbl.styles.color = "#F14C4C"
+        else:
+            icon_lbl.update("?")
+            icon_lbl.styles.color = "#888888"
 
     async def on_mount(self) -> None:
         # Start one runner per service and pump its events into the UI.
@@ -113,6 +178,7 @@ class ServicesUI(App[None]):
 
             start_task = asyncio.create_task(runner.start())
             pump_task = asyncio.create_task(self._pump_runner_events(runner))
+            asyncio.create_task(self._pump_runner_status_events(runner))
             self._runners[svc.name] = ServiceRunnerState(
                 name=svc.name,
                 runner=runner,
@@ -133,6 +199,19 @@ class ServicesUI(App[None]):
         if self._selected:
             self._render_selected()
 
+        # Start the spinner refresh loop.
+        self.set_interval(0.15, self._tick_spinner)
+
+        # Rich helper for decoding ANSI-colored process output.
+        self._ansi_decoder = AnsiDecoder()
+
+    def _tick_spinner(self) -> None:
+        self._spinner_index += 1
+        # Re-render only labels that are currently "starting".
+        for name, st in self._status.items():
+            if st == ServiceStatus.starting:
+                self._update_service_label(name)
+
     async def on_unmount(self) -> None:
         for st in self._runners.values():
             st.pump_task.cancel()
@@ -145,28 +224,70 @@ class ServicesUI(App[None]):
         async for ev in runner.events():
             self._append_event(ev)
 
+    async def _pump_runner_status_events(self, runner: ServiceRunner) -> None:
+        async for ev in runner.status_events():
+            self._apply_status_event(ev)
+
     def _render_selected(self) -> None:
         log = self.query_one("#log", RichLog)
         log.clear()
         if not self._selected:
             return
-
-        # Helpful banner so it's obvious which service console you're viewing.
-        # (No leading blank line, so we keep this as the first write.)
-        log.write(f"=== {self._selected} ===")
         for line in self._logs.get(self._selected, []):
+            # Stored history is already fully formatted (Text or str).
             log.write(line)
 
 
     def _append_event(self, ev: ServiceLogEvent) -> None:
-        # Keep in-memory history per service so switching shows different consoles.
+        """Append runner output.
+
+        Requirements:
+        - Runner output should be piped through without our styling. In particular,
+          Spring Boot's ANSI colors should remain intact.
+        - Avoid Rich markup parsing entirely for runner output.
+        """
+
         prefix = "" if ev.stream == "stdout" else "[stderr] "
-        line = f"{prefix}{ev.line}"
-        self._logs.setdefault(ev.service_name, []).append(line)
+        raw = f"{prefix}{ev.line}"
+
+        # If the process emitted ANSI, preserve it by decoding into a rich Text.
+        # Otherwise, store/write as plain text.
+        segments = list(self._ansi_decoder.decode(raw))
+        if segments:
+            text = Text.assemble(*segments)
+        else:
+            text = Text(raw)
+
+        self._logs.setdefault(ev.service_name, []).append(text)
 
         if ev.service_name == self._selected:
-            log = self.query_one("#log", RichLog)
-            log.write(line)
+            self.query_one("#log", RichLog).write(text)
+
+    def _apply_status_event(self, ev: ServiceStatusEvent) -> None:
+        self._status[ev.service_name] = ev.status
+        self._update_service_label(ev.service_name)
+
+        # Status transitions are noisy; only mirror them into logs in debug mode.
+        if not self._debug:
+            return
+
+        if ev.status == ServiceStatus.starting:
+            lvl = "INFO"
+            msg = ev.detail or "Starting"
+        elif ev.status == ServiceStatus.healthy:
+            lvl = "INFO"
+            msg = ev.detail or "Healthy"
+        else:
+            lvl = "ERROR"
+            msg = ev.error or ev.detail or "Failed"
+
+        line = format_log_line(LogLine(timestamp=datetime.now(), level=lvl, message=msg))
+        # Status lines are Foundry-generated, so we intentionally style them.
+        # Convert markup into rich Text so the log widget doesn't need markup.
+        styled = Text.from_markup(line)
+        self._logs.setdefault(ev.service_name, []).append(styled)
+        if ev.service_name == self._selected:
+            self.query_one("#log", RichLog).write(styled)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
