@@ -100,6 +100,7 @@ class ServicesUI(App[None]):
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
         ("tab", "toggle_focus", "Focus Log"),
+        ("f", "toggle_fullscreen", "Fullscreen"),
         ("u", "log_line_up", "Scroll Up"),
         ("d", "log_line_down", "Scroll Down"),
         ("t", "log_top", "Top"),
@@ -130,6 +131,7 @@ class ServicesUI(App[None]):
 
         self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
         self._spinner_index: int = 0
+        self._sidebar_visible: bool = True
 
     def compose(self) -> ComposeResult:
         with Horizontal():
@@ -237,6 +239,24 @@ class ServicesUI(App[None]):
             # Stored history is already fully formatted (Text or str).
             log.write(line)
 
+    def _select_hovered_service(self) -> None:
+        lv = self.query_one("#services", ListView)
+        index = lv.index
+        if index is None:
+            return
+        items = list(lv.children)
+        if index < 0 or index >= len(items):
+            return
+        item = items[index]
+        name = getattr(item, "name", None)
+        if not name:
+            return
+        name_s = str(name)
+        if name_s not in self._logs:
+            return
+        self._selected = name_s
+        self._render_selected()
+
 
     def _append_event(self, ev: ServiceLogEvent) -> None:
         """Append runner output.
@@ -318,6 +338,17 @@ class ServicesUI(App[None]):
         self._render_selected()
 
     def action_toggle_focus(self) -> None:
+        self._focus = "log"
+        self.query_one("#log", RichLog).focus()
+
+    def action_toggle_fullscreen(self) -> None:
+        sidebar = self.query_one("#sidebar", Vertical)
+        self._sidebar_visible = not self._sidebar_visible
+        sidebar.styles.display = "block" if self._sidebar_visible else "none"
+
+        if not self._selected or self._focus != "list":
+            self._select_hovered_service()
+
         self._focus = "log"
         self.query_one("#log", RichLog).focus()
 
