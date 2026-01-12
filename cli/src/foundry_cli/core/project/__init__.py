@@ -1,3 +1,3 @@
-from .platform import PlatformManifest, load_manifest_from_cwd
+from .manifest import ProjectManifest, load_manifest
 
-__all__ = ["PlatformManifest", "load_manifest_from_cwd"]
+__all__ = ["ProjectManifest", "load_manifest"]
