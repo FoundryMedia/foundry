@@ -6,9 +6,9 @@ from pathlib import Path
 
 from typing import Literal
 
-from foundry_cli.core.services.process_runner import ProcessBackedRunner
 from foundry_cli.core.services.health import HealthCheckConfig, wait_for_http_healthy
-from foundry_cli.core.services.service_runner import ServiceStatus, ServiceStatusEvent
+from foundry_cli.core.services.runners.base import ServiceStatus, ServiceStatusEvent
+from foundry_cli.core.services.runners.process import ProcessBackedRunner
 
 
 DependencyManager = Literal["maven", "gradle"]

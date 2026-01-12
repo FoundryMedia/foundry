@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Sequence
 
-from foundry_cli.core.services.service_runner import (
+from foundry_cli.core.services.runners.base import (
     ServiceLogEvent,
     ServiceRunner,
     ServiceStatus,
