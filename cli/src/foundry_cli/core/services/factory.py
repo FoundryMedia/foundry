@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from foundry_cli.core.project.service_runtime import ServiceRuntime
 from foundry_cli.core.project.workspace import DiscoveredService
-from foundry_cli.core.services.spring_boot_runner import SpringBootServiceRunner
-from foundry_cli.core.services.node_runner import NodeServiceRunner
-from foundry_cli.core.services.uvicorn_runner import UvicornServiceRunner
-from foundry_cli.core.services.service_runner import ServiceRunner
+from foundry_cli.core.services.runners.base import ServiceRunner
+from foundry_cli.core.services.runners.java.spring_boot.maven import SpringBootServiceRunner
+from foundry_cli.core.services.runners.node.nextjs import NodeServiceRunner
+from foundry_cli.core.services.runners.python.uvicorn import UvicornServiceRunner
 
 
 class _UnsupportedServiceRunner(ServiceRunner):

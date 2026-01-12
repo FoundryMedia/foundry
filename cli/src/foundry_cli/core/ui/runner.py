@@ -13,7 +13,7 @@ from rich.ansi import AnsiDecoder
 from rich.text import Text
 
 from foundry_cli.core.project.workspace import DiscoveredService
-from foundry_cli.core.services.service_runner import (
+from foundry_cli.core.services.runners.base import (
     ServiceLogEvent,
     ServiceRunner,
     ServiceStatus,
