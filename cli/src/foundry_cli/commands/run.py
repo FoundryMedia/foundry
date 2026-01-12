@@ -4,8 +4,8 @@ import click
 
 from foundry_cli.core.cli import FoundryGroup
 from foundry_cli.core.project.workspace import load_workspace
-from foundry_cli.core.ui.service_coordinator import ServicesUI
-from foundry_cli.core.services.subprocess_runner import SubprocessServiceRunner
+from foundry_cli.core.ui.runner import ServicesUI
+from foundry_cli.core.services.factory import create_runner
 
 
 @click.group(cls=FoundryGroup, invoke_without_command=False)
@@ -50,7 +50,7 @@ def dev(ctx: click.Context) -> None:
                 f"    {svc.path}"
             )
 
-    runners = {svc.name: SubprocessServiceRunner(svc, debug=debug) for svc in services}
+    runners = {svc.name: create_runner(svc, debug=debug) for svc in services}
 
     # Silence non-debug output; the UI is the output.
     app = ServicesUI(services, runners, debug=debug)

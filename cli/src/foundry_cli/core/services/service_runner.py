@@ -3,7 +3,7 @@ from __future__ import annotations
 import abc
 from dataclasses import dataclass
 from pathlib import Path
-from typing import AsyncIterator, Literal
+from typing import AsyncIterator, Literal, Optional
 
 from foundry_cli.core.project.workspace import DiscoveredService
 
@@ -16,6 +16,28 @@ class ServiceLogEvent:
     service_name: str
     stream: StreamName
     line: str
+
+
+class ServiceStatus(str):
+    """Lifecycle status for a service in the "run" UI."""
+
+    starting = "starting"
+    healthy = "healthy"
+    failed = "failed"
+
+
+@dataclass(frozen=True)
+class ServiceStatusEvent:
+    """Status update emitted by a runner.
+
+    - `detail` is human-readable (surface it in logs or debug panel).
+    - `error` is a longer message for failures.
+    """
+
+    service_name: str
+    status: ServiceStatus
+    detail: str = ""
+    error: Optional[str] = None
 
 
 class ServiceRunner(abc.ABC):
@@ -51,3 +73,18 @@ class ServiceRunner(abc.ABC):
     @abc.abstractmethod
     def events(self) -> AsyncIterator[ServiceLogEvent]:  # pragma: no cover
         raise NotImplementedError
+
+    def status_events(self) -> AsyncIterator[ServiceStatusEvent]:  # pragma: no cover
+        """Optional status stream.
+
+        Default: emit nothing.
+
+        Runners that support readiness checks should override this.
+        """
+
+        async def _empty() -> AsyncIterator[ServiceStatusEvent]:
+            if False:  # pragma: no cover
+                yield None  # type: ignore[misc]
+            return
+
+        return _empty()
