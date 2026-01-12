@@ -2,15 +2,15 @@ from __future__ import annotations
 
 import asyncio
 
-from foundry_cli.core.services.service_runner import (
+from foundry_cli.core.services.runners.base import (
     ServiceRunner,
     ServiceStatus,
     ServiceStatusEvent,
 )
 
 
-class UvicornServiceRunner(ServiceRunner):
-    """Placeholder for FastAPI/Uvicorn services."""
+class NodeServiceRunner(ServiceRunner):
+    """Placeholder for Next.js / Node-based services."""
 
     def __init__(self, service, *, debug: bool = False) -> None:
         super().__init__(service)
@@ -18,7 +18,7 @@ class UvicornServiceRunner(ServiceRunner):
         self._status_timeout_s = 60.0
 
     async def start(self) -> None:
-        # TODO: implement (venv/uv/pip install, uvicorn, readiness checks)
+        # TODO: implement (pnpm/npm install, dev server, readiness checks)
         return
 
     async def stop(self) -> None:
@@ -43,7 +43,7 @@ class UvicornServiceRunner(ServiceRunner):
                 ServiceStatus.failed,
                 detail="Timed out during initialization",
                 error=(
-                    "FastAPI/Uvicorn runner not implemented yet, so readiness couldn't be confirmed. "
+                    "Next.js/Node runner not implemented yet, so readiness couldn't be confirmed. "
                     f"Timed out after {self._status_timeout_s:.0f}s."
                 ),
             )
