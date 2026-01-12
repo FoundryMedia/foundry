@@ -10,7 +10,8 @@ authors = [{name="Foundry"}]
 requires-python = ">=3.9"
 dependencies = [
   "click",
-  "jsonschema"
+  "jsonschema",
+  "textual==0.56.4"
 ]
 
 [project.scripts]

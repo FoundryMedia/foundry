@@ -8,9 +8,11 @@ from foundry_cli.release.update_check import check_for_updates
 from foundry_cli.release.versioning import get_local_version, VersionResolutionError
 
 from foundry_cli.commands.run import run
+from foundry_cli.commands.alias import alias
 
 def register_commands(root: click.Group) -> None:
     root.add_command(run)
+    root.add_command(alias)
 
 
 def print_header(local: str) -> None:

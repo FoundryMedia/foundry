@@ -8,11 +8,14 @@ from foundry_cli.core.errors import FoundryError
 class FoundryGroup(click.Group):
 	"""Click Group that styles usage/click errors and suppresses default Usage output."""
 
-	def _print_usage_line(self, prog: str) -> None:
+	def _print_usage_line(self, prog: str, *, has_options: bool = True) -> None:
 		usage_pieces = [
 			click.style("Usage:", fg="yellow", bold=True),
 			click.style(prog, fg="blue", bold=True),
-			click.style("[OPTIONS]", fg="blue"),
+		]
+		if has_options:
+			usage_pieces.append(click.style("[OPTIONS]", fg="blue"))
+		usage_pieces += [
 			click.style("COMMAND", fg="cyan", bold=True),
 			click.style("[ARGS]...", fg="cyan"),
 			click.style("", reset=True),
@@ -31,6 +34,7 @@ class FoundryGroup(click.Group):
 			ctx = getattr(e, "ctx", None)
 			cmd = ctx.command if ctx is not None else None
 			is_root = bool(ctx is not None and cmd is self)
+			has_options = bool(cmd is not None and any(isinstance(p, click.Option) for p in getattr(cmd, "params", [])))
 
 			# Clean message: Click may include a full usage line in the message;
 			# if so, replace it with a concise error.
@@ -41,11 +45,8 @@ class FoundryGroup(click.Group):
 				msg = "Missing command."
 
 			# Root command behavior: keep errors terse for unknown commands.
-			# Example desired output for `foundry test`:
-			#   Error: No such command 'test'.
-			#   Try 'foundry --help' for usage.
 			if is_root and msg.lower().startswith("no such command"):
-				self._print_usage_line(prog)
+				self._print_usage_line(prog, has_options=has_options)
 				print(
 					click.style("Error:", fg="bright_red", bold=True)
 					+ " "
@@ -56,8 +57,8 @@ class FoundryGroup(click.Group):
 				print(click.style("Try '", fg="yellow", bold=True) + click.style("foundry", fg="blue", bold=True) + click.style(" --help", fg="blue", bold=False) + click.style("' for a list of commands.", fg="yellow", bold=True))
 				raise SystemExit(2)
 
-			# Default behavior: show a single colorized usage line + contextual help.
-			self._print_usage_line(prog)
+			# Default behavior:
+			self._print_usage_line(prog, has_options=has_options)
 			print(
 				click.style("Error:", fg="red", bold=True)
 				+ " "
@@ -77,14 +78,17 @@ class FoundryGroup(click.Group):
 
 				# Commands first (for groups)
 				if isinstance(cmd, click.MultiCommand):
-					commands = getattr(cmd, "commands", {}) or {}
-					if commands:
+					command_names = list(cmd.list_commands(ctx))
+					if command_names:
 						print()
 						print(
 							click.style("Commands:", fg="yellow", bold=True)
 							+ click.style("", reset=True)
 						)
-						for name, subcmd in sorted(commands.items()):
+						for name in sorted(command_names):
+							subcmd = cmd.get_command(ctx, name)
+							if subcmd is None:
+								continue
 							sub_name = click.style(name, fg="cyan", bold=True)
 							sub_help = (subcmd.get_short_help_str() or "").strip()
 							sub_help_styled = click.style(sub_help, fg="white")
@@ -124,7 +128,7 @@ class FoundryGroup(click.Group):
 			print(
 				click.style("Error:", fg="red", bold=True)
 				+ " "
-				+ click.style(str(e), fg="red")
+				+ click.style(str(e), fg="bright_red")
 				+ click.style("", reset=True)
 			)
 			raise SystemExit(1)
