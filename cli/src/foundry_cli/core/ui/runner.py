@@ -475,6 +475,16 @@ class ServicesUI(App[None]):
         sidebar = self.query_one("#sidebar", Vertical)
         self._sidebar_visible = not self._sidebar_visible
         sidebar.styles.display = "block" if self._sidebar_visible else "none"
+        if self._sidebar_visible:
+            self._focus = "list"
+            self.query_one("#services", ListView).focus()
+            try:
+                self.query_one("#sidebar_hint", Label).update("↑/↓ Select • → to Interact")
+            except NoMatches:
+                pass
+        else:
+            self._focus = "log"
+            self.query_one("#log", RichLog).focus()
 
     def action_log_line_up(self) -> None:
         # Scroll log up without changing focus.
