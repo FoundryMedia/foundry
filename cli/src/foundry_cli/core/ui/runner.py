@@ -21,7 +21,7 @@ from foundry_cli.core.services.runners.base import (
     ServiceStatusEvent,
 )
 
-from foundry_cli.core.ui.logger import LogLine, format_log_line
+from foundry_cli.core.util.logger import LogLine, format_log_line
 
 
 @dataclass(frozen=True)
@@ -307,6 +307,19 @@ class ServicesUI(App[None]):
         - Avoid Rich markup parsing entirely for runner output.
         """
 
+        if ev.level:
+            if ev.level == "DEBUG" and not self._debug:
+                return
+            line = format_log_line(LogLine(timestamp=datetime.now(), level=ev.level, message=ev.line))
+            styled = Text.from_markup(line)
+            self._logs.setdefault(ev.service_name, []).append(styled)
+            if ev.service_name == self._selected:
+                try:
+                    self.query_one("#log", RichLog).write(styled)
+                except NoMatches:
+                    return
+            return
+
         prefix = "" if ev.stream == "stdout" else "[stderr] "
         raw = f"{prefix}{ev.line}"
 
@@ -330,21 +343,15 @@ class ServicesUI(App[None]):
         self._status[ev.service_name] = ev.status
         self._update_service_label(ev.service_name)
 
-        # Status transitions are noisy; only mirror them into logs in debug mode.
-        if not self._debug:
+        if ev.level == "DEBUG" and not self._debug:
             return
 
-        if ev.status == ServiceStatus.starting:
-            lvl = "INFO"
-            msg = ev.detail or "Starting"
-        elif ev.status == ServiceStatus.healthy:
-            lvl = "INFO"
-            msg = ev.detail or "Healthy"
-        else:
-            lvl = "ERROR"
+        if ev.status == ServiceStatus.failed:
             msg = ev.error or ev.detail or "Failed"
+        else:
+            msg = ev.detail or ev.status
 
-        line = format_log_line(LogLine(timestamp=datetime.now(), level=lvl, message=msg))
+        line = format_log_line(LogLine(timestamp=datetime.now(), level=ev.level, message=msg))
         # Status lines are Foundry-generated, so we intentionally style them.
         # Convert markup into rich Text so the log widget doesn't need markup.
         styled = Text.from_markup(line)
