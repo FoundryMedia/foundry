@@ -283,11 +283,7 @@ class ServicesUI(App[None]):
         # Rich helper for decoding ANSI-colored process output.
         self._ansi_decoder = AnsiDecoder()
 
-        log = self.query_one("#log", RichLog)
-        if hasattr(log, "show_vertical_scrollbar"):
-            log.show_vertical_scrollbar = False
-        if hasattr(log, "show_horizontal_scrollbar"):
-            log.show_horizontal_scrollbar = False
+        self._sync_log_scrollbars()
 
 
     def _tick_spinner(self) -> None:
@@ -475,16 +471,14 @@ class ServicesUI(App[None]):
         sidebar = self.query_one("#sidebar", Vertical)
         self._sidebar_visible = not self._sidebar_visible
         sidebar.styles.display = "block" if self._sidebar_visible else "none"
-        if self._sidebar_visible:
-            self._focus = "list"
-            self.query_one("#services", ListView).focus()
-            try:
-                self.query_one("#sidebar_hint", Label).update("↑/↓ Select • → to Interact")
-            except NoMatches:
-                pass
-        else:
-            self._focus = "log"
-            self.query_one("#log", RichLog).focus()
+        self._sync_log_scrollbars()
+
+    def _sync_log_scrollbars(self) -> None:
+        log = self.query_one("#log", RichLog)
+        if hasattr(log, "show_vertical_scrollbar"):
+            log.show_vertical_scrollbar = self._sidebar_visible
+        if hasattr(log, "show_horizontal_scrollbar"):
+            log.show_horizontal_scrollbar = False
 
     def action_log_line_up(self) -> None:
         # Scroll log up without changing focus.
