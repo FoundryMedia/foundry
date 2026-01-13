@@ -8,6 +8,7 @@ from typing import Dict, Optional
 
 from textual.app import App, ComposeResult
 from textual.containers import Horizontal, Vertical
+from textual.css.query import NoMatches
 from textual.widgets import Footer, Label, ListItem, ListView, RichLog
 from rich.ansi import AnsiDecoder
 from rich.text import Text
@@ -29,6 +30,7 @@ class ServiceRunnerState:
     runner: ServiceRunner
     start_task: asyncio.Task[None]
     pump_task: asyncio.Task[None]
+    status_task: asyncio.Task[None]
 
 
 class ServicesUI(App[None]):
@@ -180,12 +182,13 @@ class ServicesUI(App[None]):
 
             start_task = asyncio.create_task(runner.start())
             pump_task = asyncio.create_task(self._pump_runner_events(runner))
-            asyncio.create_task(self._pump_runner_status_events(runner))
+            status_task = asyncio.create_task(self._pump_runner_status_events(runner))
             self._runners[svc.name] = ServiceRunnerState(
                 name=svc.name,
                 runner=runner,
                 start_task=start_task,
                 pump_task=pump_task,
+                status_task=status_task,
             )
 
         # Default focus: list and highlight the first service.
@@ -217,18 +220,29 @@ class ServicesUI(App[None]):
     async def on_unmount(self) -> None:
         for st in self._runners.values():
             st.pump_task.cancel()
-        await asyncio.gather(*(st.pump_task for st in self._runners.values()), return_exceptions=True)
+            st.status_task.cancel()
+        await asyncio.gather(
+            *(st.pump_task for st in self._runners.values()),
+            *(st.status_task for st in self._runners.values()),
+            return_exceptions=True,
+        )
 
         await asyncio.gather(*(st.start_task for st in self._runners.values()), return_exceptions=True)
         await asyncio.gather(*(st.runner.stop() for st in self._runners.values()), return_exceptions=True)
 
     async def _pump_runner_events(self, runner: ServiceRunner) -> None:
-        async for ev in runner.events():
-            self._append_event(ev)
+        try:
+            async for ev in runner.events():
+                self._append_event(ev)
+        except asyncio.CancelledError:
+            return
 
     async def _pump_runner_status_events(self, runner: ServiceRunner) -> None:
-        async for ev in runner.status_events():
-            self._apply_status_event(ev)
+        try:
+            async for ev in runner.status_events():
+                self._apply_status_event(ev)
+        except asyncio.CancelledError:
+            return
 
     def _render_selected(self) -> None:
         log = self.query_one("#log", RichLog)
@@ -281,7 +295,10 @@ class ServicesUI(App[None]):
         self._logs.setdefault(ev.service_name, []).append(text)
 
         if ev.service_name == self._selected:
-            self.query_one("#log", RichLog).write(text)
+            try:
+                self.query_one("#log", RichLog).write(text)
+            except NoMatches:
+                return
 
     def _apply_status_event(self, ev: ServiceStatusEvent) -> None:
         self._status[ev.service_name] = ev.status
@@ -307,7 +324,10 @@ class ServicesUI(App[None]):
         styled = Text.from_markup(line)
         self._logs.setdefault(ev.service_name, []).append(styled)
         if ev.service_name == self._selected:
-            self.query_one("#log", RichLog).write(styled)
+            try:
+                self.query_one("#log", RichLog).write(styled)
+            except NoMatches:
+                return
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
