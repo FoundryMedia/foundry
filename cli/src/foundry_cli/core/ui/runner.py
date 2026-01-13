@@ -469,14 +469,23 @@ class ServicesUI(App[None]):
 
     def action_toggle_fullscreen(self) -> None:
         sidebar = self.query_one("#sidebar", Vertical)
+        entering_fullscreen = self._sidebar_visible
         self._sidebar_visible = not self._sidebar_visible
         sidebar.styles.display = "block" if self._sidebar_visible else "none"
         self._sync_log_scrollbars()
 
+        if entering_fullscreen:
+            self._focus = "log"
+            self.query_one("#log", RichLog).focus()
+            try:
+                self.query_one("#sidebar_hint", Label).update("[Esc] to Change Service")
+            except NoMatches:
+                pass
+
     def _sync_log_scrollbars(self) -> None:
         log = self.query_one("#log", RichLog)
         if hasattr(log, "show_vertical_scrollbar"):
-            log.show_vertical_scrollbar = self._sidebar_visible
+            log.show_vertical_scrollbar = False
         if hasattr(log, "show_horizontal_scrollbar"):
             log.show_horizontal_scrollbar = False
 
