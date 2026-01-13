@@ -7,6 +7,7 @@ from datetime import datetime
 from typing import Dict, Optional
 
 from textual.app import App, ComposeResult
+from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual.widgets import Footer, Label, ListItem, ListView, RichLog
@@ -100,20 +101,24 @@ class ServicesUI(App[None]):
     """
 
     BINDINGS = [
-        ("ctrl+c", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit"),
 
         # Navigation / focus
-        ("right", "interact", "Interact"),
-        ("escape", "unfocus", "Exit"),
+        Binding("right", "interact", "Interact"),
+        Binding("escape", "unfocus", "Exit", show=False),
 
         # Layout
-        ("tab", "toggle_fullscreen", "Fullscreen"),
+        Binding("tab", "toggle_fullscreen", "Fullscreen", priority=True),
 
         # Log scrolling (when log is focused)
-        ("u", "log_line_up", "Scroll Up"),
-        ("d", "log_line_down", "Scroll Down"),
-        ("t", "log_top", "Top"),
-        ("b", "log_bottom", "Bottom"),
+        Binding("u", "log_line_up", "Scroll Up"),
+        Binding("d", "log_line_down", "Scroll Down"),
+        Binding("t", "log_top", "Top"),
+        Binding("b", "log_bottom", "Bottom"),
+        Binding("shift+up", "log_fast_up", "Fast Up"),
+        Binding("shift+down", "log_fast_down", "Fast Down"),
+        Binding("shift+left", "log_fast_left", "Fast Left"),
+        Binding("shift+right", "log_fast_right", "Fast Right"),
     ]
 
     # The stock Textual footer renders a limited set of bindings and can feel
@@ -413,28 +418,51 @@ class ServicesUI(App[None]):
         self._sidebar_visible = not self._sidebar_visible
         sidebar.styles.display = "block" if self._sidebar_visible else "none"
 
+        log = self.query_one("#log", RichLog)
+        show_scrollbars = self._sidebar_visible
+        if hasattr(log, "show_vertical_scrollbar"):
+            log.show_vertical_scrollbar = show_scrollbars
+        if hasattr(log, "show_horizontal_scrollbar"):
+            log.show_horizontal_scrollbar = show_scrollbars
+
         if not self._selected or self._focus != "list":
             self._select_hovered_service()
 
         self._focus = "log"
-        self.query_one("#log", RichLog).focus()
+        log.focus()
 
     def action_log_line_up(self) -> None:
-    # Scroll log up without changing focus.
+        # Scroll log up without changing focus.
         log = self.query_one("#log", RichLog)
         log.scroll_to(y=max(0, log.scroll_y - 1))
 
     def action_log_line_down(self) -> None:
-    # Scroll log down without changing focus.
+        # Scroll log down without changing focus.
         log = self.query_one("#log", RichLog)
         log.scroll_to(y=log.scroll_y + 1)
 
+    def action_log_fast_up(self) -> None:
+        log = self.query_one("#log", RichLog)
+        log.scroll_to(y=max(0, log.scroll_y - 2))
+
+    def action_log_fast_down(self) -> None:
+        log = self.query_one("#log", RichLog)
+        log.scroll_to(y=log.scroll_y + 2)
+
+    def action_log_fast_left(self) -> None:
+        log = self.query_one("#log", RichLog)
+        log.scroll_to(x=max(0, log.scroll_x - 2))
+
+    def action_log_fast_right(self) -> None:
+        log = self.query_one("#log", RichLog)
+        log.scroll_to(x=log.scroll_x + 2)
+
     def action_log_top(self) -> None:
-    # Jump to top.
+        # Jump to top.
         self.query_one("#log", RichLog).scroll_to(y=0, animate=False)
 
     def action_log_bottom(self) -> None:
-    # Jump to bottom.
+        # Jump to bottom.
         self.query_one("#log", RichLog).scroll_end(animate=False)
 
 
