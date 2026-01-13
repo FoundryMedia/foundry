@@ -101,7 +101,7 @@ class ServicesUI(App[None]):
     """
 
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit"),
+        Binding("ctrl+c", "quit", "Quit", priority=True),
 
         # Navigation / focus
         Binding("right", "interact", "Interact"),
@@ -115,19 +115,11 @@ class ServicesUI(App[None]):
         Binding("d", "log_line_down", "Scroll Down"),
         Binding("t", "log_top", "Top"),
         Binding("b", "log_bottom", "Bottom"),
-        Binding("shift+up", "log_fast_up", "Fast Up"),
-        Binding("shift+down", "log_fast_down", "Fast Down"),
-        Binding("shift+left", "log_fast_left", "Fast Left"),
-        Binding("shift+right", "log_fast_right", "Fast Right"),
+        Binding("shift+up", "log_fast_up", "Fast Up", show=False),
+        Binding("shift+down", "log_fast_down", "Fast Down", show=False),
+        Binding("shift+left", "log_fast_left", "Fast Left", show=False),
+        Binding("shift+right", "log_fast_right", "Fast Right", show=False),
     ]
-
-    # The stock Textual footer renders a limited set of bindings and can feel
-    # "order dependent" when we add more shortcuts. Make the footer explicit so
-    # important actions (like Fullscreen) don't disappear as we evolve bindings.
-    FOOTER_BINDINGS: set[str] = {
-        "toggle_fullscreen",
-        "quit",
-    }
 
     def __init__(
         self,
@@ -464,13 +456,3 @@ class ServicesUI(App[None]):
     def action_log_bottom(self) -> None:
         # Jump to bottom.
         self.query_one("#log", RichLog).scroll_end(animate=False)
-
-
-class ServicesFooter(Footer):
-    """(Unused) Placeholder for a future custom footer.
-
-    If we need hard control over which bindings appear in the footer (rather than
-    relying on Textual's built-in Footer), we'll implement it here.
-    """
-
-    pass
