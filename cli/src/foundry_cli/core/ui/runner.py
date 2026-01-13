@@ -170,8 +170,9 @@ class ServicesUI(App[None]):
         scrollbar-size-horizontal: 0;
     }
 
-    /* Disable scrollbars in VSCode integrated terminal to avoid history artifacts */
+    /* VSCode terminal: no border/scrollbars for cleaner look */
     #log.vscode-terminal {
+        border: none;
         scrollbar-size-vertical: 0;
         scrollbar-size-horizontal: 0;
     }

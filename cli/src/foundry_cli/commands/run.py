@@ -18,7 +18,10 @@ def run(ctx: click.Context, debug: bool) -> None:
     return
 
 
-@run.command()
+run.help_tip = "VSCode users, in Settings set terminal.integrated.stickyScroll.enabled to false"
+
+
+@run.command(add_help_option=False)
 @click.pass_context
 def dev(ctx: click.Context) -> None:
     """Run the platform in development mode with the Services UI."""
