@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
 from foundry_cli.core.project.workspace import DiscoveredService
+from foundry_cli.core.util.logger import LogLevel
 
 
 StreamName = Literal["stdout", "stderr"]
@@ -16,6 +17,7 @@ class ServiceLogEvent:
     service_name: str
     stream: StreamName
     line: str
+    level: LogLevel | None = None
 
 
 class ServiceStatus(str):
@@ -38,6 +40,7 @@ class ServiceStatusEvent:
     status: ServiceStatus
     detail: str = ""
     error: Optional[str] = None
+    level: LogLevel = "INFO"
 
 
 class ServiceRunner(abc.ABC):

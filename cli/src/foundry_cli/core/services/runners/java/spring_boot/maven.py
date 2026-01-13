@@ -67,6 +67,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                     ServiceStatus.failed,
                     detail=f"Unsupported dependency manager: {self._dep}",
                     error="Only Maven is supported right now.",
+                    level="ERROR",
                 )
             )
             return
@@ -79,6 +80,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                     ServiceStatus.failed,
                     detail="No Maven wrapper found",
                     error="Expected mvnw.cmd (Windows) or mvnw in this service directory.",
+                    level="ERROR",
                 )
             )
             return
@@ -91,6 +93,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                     ServiceStatus.failed,
                     detail="No pom.xml",
                     error="Expected pom.xml in this service directory.",
+                    level="ERROR",
                 )
             )
             return
@@ -106,6 +109,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                     ServiceStatus.failed,
                     detail=f"Maven exited ({proc.returncode})",
                     error="mvn spring-boot:run failed. See logs above.",
+                    level="ERROR",
                 )
             )
             return
@@ -119,6 +123,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                     self.name,
                     ServiceStatus.starting,
                     detail=f"Waiting for health (app:{self._port}, actuator:{self._actuator_port or self._port})",
+                    level="DEBUG",
                 )
             )
 
@@ -139,6 +144,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                         ServiceStatus.failed,
                         detail=f"Timed out waiting for readiness on port {self._port}",
                         error=f"Service didn't become reachable/healthy within {STARTUP_TIMEOUT_S:.0f}s.",
+                        level="ERROR",
                     )
                 )
                 return
@@ -149,6 +155,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                         ServiceStatus.failed,
                         detail="Process exited before ready",
                         error=str(e),
+                        level="ERROR",
                     )
                 )
                 return
@@ -158,6 +165,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                 self.name,
                 ServiceStatus.starting,
                 detail="Process running; waiting for health check (port unknown)",
+                level="DEBUG",
             )
         )
 
@@ -192,7 +200,12 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                             )
                         )
                         await self._status_queue.put(
-                            ServiceStatusEvent(self.name, ServiceStatus.healthy, detail=f"Healthy: {url}")
+                            ServiceStatusEvent(
+                                self.name,
+                                ServiceStatus.healthy,
+                                detail=f"Healthy: {url}",
+                                level="INFO",
+                            )
                         )
                         return
                     except Exception:

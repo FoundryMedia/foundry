@@ -61,8 +61,17 @@ class ProcessBackedRunner(ServiceRunner):
         if self._proc and self._proc.returncode is None:
             return self._proc
 
+        argv_list = list(argv)
+        if argv_list:
+            argv_list[0] = Path(argv_list[0]).name
+
         await self._status_queue.put(
-            ServiceStatusEvent(self.name, ServiceStatus.starting, detail=f"Starting: {' '.join(argv)}")
+            ServiceStatusEvent(
+                self.name,
+                ServiceStatus.starting,
+                detail=f"Starting Service: {' '.join(argv_list)}",
+                level="INFO",
+            )
         )
 
         self._proc = await asyncio.create_subprocess_exec(
@@ -81,15 +90,15 @@ class ProcessBackedRunner(ServiceRunner):
             asyncio.create_task(_read_stream(self.name, "stderr", self._proc.stderr, self._log_queue)),
         ]
 
-        if self._debug:
-            # Emit as a plain line; the UI will decide how to style it.
-            await self._log_queue.put(
-                ServiceLogEvent(
-                    self.name,
-                    "stdout",
-                    f"spawned pid={self._proc.pid} cwd={cwd or self.cwd}",
-                )
+        # Emit as a plain line; the UI will decide how to style it.
+        await self._log_queue.put(
+            ServiceLogEvent(
+                self.name,
+                "stdout",
+                f"spawned pid={self._proc.pid} cwd={cwd or self.cwd}",
+                level="DEBUG",
             )
+        )
 
         return self._proc
 
