@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Dict, Optional
@@ -32,6 +33,65 @@ class ServiceRunnerState:
     start_task: asyncio.Task[None]
     pump_task: asyncio.Task[None]
     status_task: asyncio.Task[None]
+
+
+class ServicesFooter(Footer):
+    def _make_key_text(self) -> Text:
+        base_style = self.rich_style
+        text = Text(
+            style=self.rich_style,
+            no_wrap=True,
+            overflow="ellipsis",
+            justify="left",
+            end="",
+        )
+        highlight_style = self.get_component_rich_style("footer--highlight")
+        highlight_key_style = self.get_component_rich_style("footer--highlight-key")
+        key_style = self.get_component_rich_style("footer--key")
+        description_style = self.get_component_rich_style("footer--description")
+
+        bindings = [
+            binding
+            for (_, binding) in self.app.namespace_bindings.values()
+            if binding.show
+        ]
+
+        action_to_bindings = defaultdict(list)
+        for binding in bindings:
+            action_to_bindings[binding.action].append(binding)
+
+        preferred_actions = ["quit", "toggle_fullscreen"]
+        ordered_actions = [
+            *[action for action in preferred_actions if action in action_to_bindings],
+            *[
+                action
+                for action in action_to_bindings.keys()
+                if action not in preferred_actions
+            ],
+        ]
+
+        for action in ordered_actions:
+            binding = action_to_bindings[action][0]
+            if binding.key_display is None:
+                key_display = self.app.get_key_display(binding.key)
+                if key_display is None:
+                    key_display = binding.key.upper()
+            else:
+                key_display = binding.key_display
+            hovered = self.highlight_key == binding.key
+            key_text = Text.assemble(
+                (f" {key_display} ", highlight_key_style if hovered else key_style),
+                (
+                    f" {binding.description} ",
+                    highlight_style if hovered else base_style + description_style,
+                ),
+                meta={
+                    "@click": f"app.check_bindings('{binding.key}')",
+                    "key": binding.key,
+                },
+            )
+            text.append_text(key_text)
+        return text
 
 
 class ServicesUI(App[None]):
@@ -161,7 +221,7 @@ class ServicesUI(App[None]):
                     lv.append(ListItem(row, id=safe_id, name=svc.name))
                 yield lv
             yield RichLog(id="log", highlight=False, markup=False, wrap=False)
-        yield Footer()
+        yield ServicesFooter()
 
 
     def _update_service_label(self, service_name: str) -> None:
