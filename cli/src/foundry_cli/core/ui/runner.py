@@ -393,7 +393,7 @@ class ServicesUI(App[None]):
 
         # Once the log is focused, update the hint to explain how to get back.
         try:
-            self.query_one("#sidebar_hint", Label).update("Esc to Exit")
+            self.query_one("#sidebar_hint", Label).update("[Esc] to Change Service")
         except NoMatches:
             pass
 
@@ -404,7 +404,7 @@ class ServicesUI(App[None]):
         self.query_one("#services", ListView).focus()
 
         try:
-            self.query_one("#sidebar_hint", Label).update("↑/↓ Select • → Interact")
+            self.query_one("#sidebar_hint", Label).update("↑/↓ Select • → to Interact")
         except NoMatches:
             pass
 
