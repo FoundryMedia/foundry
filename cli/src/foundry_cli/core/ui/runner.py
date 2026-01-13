@@ -166,16 +166,6 @@ class ServicesUI(App[None]):
             yield RichLog(id="log", highlight=False, markup=False, wrap=False)
         yield Footer()
 
-    def on_mount(self) -> None:
-        # ...existing code...
-        super().on_mount()
-
-        try:
-            footer = self.query_one(Footer)
-            footer.styles.display = "block"
-            footer.show_bindings = lambda binding: binding.action in self.FOOTER_BINDINGS 
-        except Exception:
-            pass
 
     def _update_service_label(self, service_name: str) -> None:
         safe_id = f"svc-{service_name}".replace(" ", "-")
@@ -235,6 +225,7 @@ class ServicesUI(App[None]):
 
         # Rich helper for decoding ANSI-colored process output.
         self._ansi_decoder = AnsiDecoder()
+
 
     def _tick_spinner(self) -> None:
         self._spinner_index += 1
@@ -438,3 +429,13 @@ class ServicesUI(App[None]):
     def action_log_bottom(self) -> None:
     # Jump to bottom.
         self.query_one("#log", RichLog).scroll_end(animate=False)
+
+
+class ServicesFooter(Footer):
+    """(Unused) Placeholder for a future custom footer.
+
+    If we need hard control over which bindings appear in the footer (rather than
+    relying on Textual's built-in Footer), we'll implement it here.
+    """
+
+    pass
