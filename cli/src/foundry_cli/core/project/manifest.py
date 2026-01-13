@@ -1,11 +1,32 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from foundry_cli.core.errors import FoundryError
+
+
+@dataclass(frozen=True)
+class ServiceConfig:
+    """Launch configuration for a single service."""
+
+    enabled: bool = True
+    port: int | None = None
+    actuator_port: int | None = None
+    args: tuple[str, ...] = field(default_factory=tuple)
+    env: dict[str, str] = field(default_factory=dict)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "ServiceConfig":
+        return cls(
+            enabled=data.get("enabled", True),
+            port=data.get("port"),
+            actuator_port=data.get("actuatorPort"),
+            args=tuple(data.get("args", [])),
+            env=dict(data.get("env", {})),
+        )
 
 
 @dataclass(frozen=True)
@@ -33,6 +54,23 @@ class ProjectManifest:
 
         v = self.data.get("servicesDir")
         return v if isinstance(v, str) and v.strip() else "apps"
+
+    @property
+    def services_config(self) -> dict[str, ServiceConfig]:
+        """Service launch configurations keyed by service name."""
+
+        raw = self.data.get("services", {})
+        if not isinstance(raw, dict):
+            return {}
+
+        return {
+            name: ServiceConfig.from_dict(cfg) if isinstance(cfg, dict) else ServiceConfig()
+            for name, cfg in raw.items()
+        }
+
+    def get_service_config(self, service_name: str) -> ServiceConfig:
+        """Get the launch config for a service, or defaults if not specified."""
+        return self.services_config.get(service_name, ServiceConfig())
 
 
 def load_manifest() -> ProjectManifest:
@@ -65,4 +103,4 @@ def load_manifest_from_path(manifest_path: Path) -> ProjectManifest:
     return ProjectManifest(path=manifest_path, data=data)
 
 
-__all__ = ["ProjectManifest", "load_manifest", "load_manifest_from_path"]
+__all__ = ["ProjectManifest", "ServiceConfig", "load_manifest", "load_manifest_from_path"]

@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -24,6 +25,7 @@ from foundry_cli.core.services.runners.base import (
 )
 
 from foundry_cli.core.util.logger import LogLine, format_log_line
+from foundry_cli.release.versioning import get_local_version
 
 
 @dataclass(frozen=True)
@@ -60,7 +62,7 @@ class ServicesFooter(Footer):
         for binding in bindings:
             action_to_bindings[binding.action].append(binding)
 
-        preferred_actions = ["quit", "toggle_fullscreen"]
+        preferred_actions = ["request_quit", "toggle_fullscreen"]
         ordered_actions = [
             *[action for action in preferred_actions if action in action_to_bindings],
             *[
@@ -95,12 +97,7 @@ class ServicesFooter(Footer):
 
 
 class ServicesUI(App[None]):
-    """Turbo-like services UI.
-
-    This class focuses on display + interaction.
-
-    Service execution is handled by injected `ServiceRunner` instances.
-    """
+    """TUI for running and monitoring multiple services."""
 
     CSS = """
     Screen {
@@ -110,12 +107,17 @@ class ServicesUI(App[None]):
     #sidebar {
         width: 34;
         min-width: 24;
-        border: none;
+        border: tall $boost;
+        margin-bottom: 1;
+    }
+
+    #sidebar.fullscreen {
+        display: none;
     }
 
     #sidebar_title {
         text-style: bold underline;
-        padding: 0 1;
+        padding: 1 1 0 1;
     }
 
     #sidebar_hint {
@@ -139,8 +141,13 @@ class ServicesUI(App[None]):
     }
 
     .svc_icon {
-    width: 3;
+        width: 3;
         content-align: left middle;
+    }
+
+    /* Wider icon column for ASCII status indicators in non-VSCode terminals */
+    .svc_icon.ascii-mode {
+        width: 5;
     }
 
     .svc_name {
@@ -150,31 +157,46 @@ class ServicesUI(App[None]):
     }
 
     #log {
+        border: tall $boost;
+        padding: 0 1;
+        scrollbar-size-vertical: 2;
+        scrollbar-size-horizontal: 1;
+    }
+
+    #log.fullscreen {
         border: none;
+        padding: 0;
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
+    }
+
+    /* Disable scrollbars in VSCode integrated terminal to avoid history artifacts */
+    #log.vscode-terminal {
+        scrollbar-size-vertical: 0;
+        scrollbar-size-horizontal: 0;
     }
 
     Footer {
-        /* Keep the classic Textual footer look, but make it punchier. */
         text-style: bold;
         content-align: center middle;
     }
     """
 
     BINDINGS = [
-        Binding("ctrl+c", "quit", "Quit", priority=True),
+        Binding("ctrl+c", "request_quit", "Quit", priority=True),
 
         # Navigation / focus
-        Binding("right", "interact", "Interact"),
+        Binding("right", "interact", "Interact", show=False),
         Binding("escape", "unfocus", "Exit", show=False),
 
         # Layout
-        Binding("tab", "toggle_fullscreen", "Fullscreen", priority=True),
+        Binding("tab", "toggle_fullscreen", "Toggle Sidebar", priority=True),
 
         # Log scrolling (when log is focused)
         Binding("u", "log_line_up", "Scroll Up"),
         Binding("d", "log_line_down", "Scroll Down"),
-        Binding("t", "log_top", "Top"),
-        Binding("b", "log_bottom", "Bottom"),
+        Binding("t", "log_top", "Jump Top"),
+        Binding("b", "log_bottom", "Jump Bottom"),
         Binding("shift+up", "log_fast_up", "Fast Up", show=False),
         Binding("shift+down", "log_fast_down", "Fast Down", show=False),
         Binding("shift+left", "log_fast_left", "Fast Left", show=False),
@@ -197,13 +219,15 @@ class ServicesUI(App[None]):
         self._runners: Dict[str, ServiceRunnerState] = {}
         self._selected: Optional[str] = services[0].name if services else None
 
-        # starting | healthy | failed
-        # Start in starting so the spinner shows immediately.
         self._status: Dict[str, ServiceStatus] = {s.name: ServiceStatus.starting for s in services}
 
-        self._focus: str = "list"  # list | log
+        self._focus: str = "list"
+        self._is_vscode = os.environ.get("TERM_PROGRAM") == "vscode"
 
-        self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+        if self._is_vscode:
+            self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+        else:
+            self._spinner_frames: tuple[str, ...] = (" -", " \\", " |", " /")
         self._spinner_index: int = 0
         self._sidebar_visible: bool = True
 
@@ -232,22 +256,58 @@ class ServicesUI(App[None]):
             return
 
         st = self._status.get(service_name)
+        is_selected = service_name == self._selected
         if st == ServiceStatus.starting:
             frame = self._spinner_frames[self._spinner_index % len(self._spinner_frames)]
             icon_lbl.update(frame)
-            icon_lbl.styles.color = "#3B8EEA"
+            icon_lbl.styles.color = "#F5F536" if is_selected else "#3B8EEA"
         elif st == ServiceStatus.healthy:
-            icon_lbl.update("✔")
+            icon_lbl.update("✔" if self._is_vscode else "[OK]")
             icon_lbl.styles.color = "#23D18B"
         elif st == ServiceStatus.failed:
-            icon_lbl.update("✘")
+            icon_lbl.update("✘" if self._is_vscode else "[X]")
             icon_lbl.styles.color = "#F14C4C"
         else:
             icon_lbl.update("?")
             icon_lbl.styles.color = "#888888"
 
+    def _write_banner_to_service(self, service_name: str) -> None:
+        """Write the Foundry ASCII banner to a service's log buffer."""
+        try:
+            version = get_local_version()
+        except Exception:
+            version = "?.?.?"
+
+        banner_lines = [
+            "[#3B8EEA bold]       ______ ____  _    _ _   _ _____  _______     __[/]",
+            "[#3B8EEA bold]      |  ____/ __ \\| |  | | \\ | |  __ \\|  __ \\ \\   / /[/]",
+            "[#3B8EEA bold]      | |__ | |  | | |  | |  \\| | |  | | |__) \\ \\_/ /[/]",
+            "[#3B8EEA bold]      |  __|| |  | | |  | | . ` | |  | |  _  / \\   /[/]",
+            "[#3B8EEA bold]      | |   | |__| | |__| | |\\  | |__| | | \\ \\  | |[/]",
+            "[#3B8EEA bold]      |_|    \\____/ \\____/|_| \\_|_____/|_|  \\_\\ |_|[/]",
+            "",
+            f"[#3B8EEA bold]                         v{version}[/]",
+            "",
+        ]
+
+        for line in banner_lines:
+            styled = Text.from_markup(line)
+            self._logs.setdefault(service_name, []).append(styled)
+
     async def on_mount(self) -> None:
-        # Start one runner per service and pump its events into the UI.
+        if self._is_vscode:
+            self.query_one("#log", RichLog).add_class("vscode-terminal")
+        else:
+            for svc in self._services:
+                safe_id = f"svc-{svc.name}".replace(" ", "-")
+                try:
+                    self.query_one(f"#icon-{safe_id}", Label).add_class("ascii-mode")
+                except Exception:
+                    pass
+
+        for svc in self._services:
+            self._write_banner_to_service(svc.name)
+
         for svc in self._services:
             runner = self._provided_runners.get(svc.name)
             if runner is None:
@@ -264,11 +324,9 @@ class ServicesUI(App[None]):
                 status_task=status_task,
             )
 
-        # Default focus: list and highlight the first service.
         lv = self.query_one("#services", ListView)
         lv.focus()
         if self._services:
-            # Highlight index 0 (first service item).
             try:
                 lv.index = 0
             except Exception:
@@ -277,18 +335,12 @@ class ServicesUI(App[None]):
         if self._selected:
             self._render_selected()
 
-        # Start the spinner refresh loop.
         self.set_interval(0.15, self._tick_spinner)
-
-        # Rich helper for decoding ANSI-colored process output.
         self._ansi_decoder = AnsiDecoder()
-
-        self._sync_log_scrollbars()
 
 
     def _tick_spinner(self) -> None:
         self._spinner_index += 1
-        # Re-render only labels that are currently "starting".
         for name, st in self._status.items():
             if st == ServiceStatus.starting:
                 self._update_service_label(name)
@@ -297,14 +349,19 @@ class ServicesUI(App[None]):
         for st in self._runners.values():
             st.pump_task.cancel()
             st.status_task.cancel()
+            st.start_task.cancel()
+
         await asyncio.gather(
             *(st.pump_task for st in self._runners.values()),
             *(st.status_task for st in self._runners.values()),
+            *(st.start_task for st in self._runners.values()),
             return_exceptions=True,
         )
 
-        await asyncio.gather(*(st.start_task for st in self._runners.values()), return_exceptions=True)
-        await asyncio.gather(*(st.runner.stop() for st in self._runners.values()), return_exceptions=True)
+        await asyncio.gather(
+            *(st.runner.stop() for st in self._runners.values()),
+            return_exceptions=True,
+        )
 
     async def _pump_runner_events(self, runner: ServiceRunner) -> None:
         try:
@@ -326,8 +383,10 @@ class ServicesUI(App[None]):
         if not self._selected:
             return
         for line in self._logs.get(self._selected, []):
-            # Stored history is already fully formatted (Text or str).
             log.write(line)
+
+        for name in self._status:
+            self._update_service_label(name)
 
     def _select_hovered_service(self) -> None:
         lv = self.query_one("#services", ListView)
@@ -349,13 +408,7 @@ class ServicesUI(App[None]):
 
 
     def _append_event(self, ev: ServiceLogEvent) -> None:
-        """Append runner output.
-
-        Requirements:
-        - Runner output should be piped through without our styling. In particular,
-          Spring Boot's ANSI colors should remain intact.
-        - Avoid Rich markup parsing entirely for runner output.
-        """
+        """Append runner log output, preserving ANSI colors."""
 
         if ev.level:
             if ev.level == "DEBUG" and not self._debug:
@@ -372,9 +425,6 @@ class ServicesUI(App[None]):
 
         prefix = "" if ev.stream == "stdout" else "[stderr] "
         raw = f"{prefix}{ev.line}"
-
-        # If the process emitted ANSI, preserve it by decoding into a rich Text.
-        # Otherwise, store/write as plain text.
         segments = list(self._ansi_decoder.decode(raw))
         if segments:
             text = Text.assemble(*segments)
@@ -402,8 +452,6 @@ class ServicesUI(App[None]):
             msg = ev.detail or ev.status
 
         line = format_log_line(LogLine(timestamp=datetime.now(), level=ev.level, message=msg))
-        # Status lines are Foundry-generated, so we intentionally style them.
-        # Convert markup into rich Text so the log widget doesn't need markup.
         styled = Text.from_markup(line)
         self._logs.setdefault(ev.service_name, []).append(styled)
         if ev.service_name == self._selected:
@@ -423,7 +471,7 @@ class ServicesUI(App[None]):
         self._render_selected()
 
     def on_list_view_highlighted(self, event: ListView.Highlighted) -> None:
-        """Auto-select on arrow-key navigation (no Enter required)."""
+        """Auto-select service on arrow navigation."""
 
         item = event.item
         if item is None:
@@ -441,23 +489,18 @@ class ServicesUI(App[None]):
         self._render_selected()
 
     def action_interact(self) -> None:
-        """Focus the log pane.
-
-        Bound to Right Arrow so we don't steal Tab (used for horizontal scrolling)
-        and to avoid changing list selection when the user just wants to interact.
-        """
+        """Focus the log pane (Right Arrow)."""
 
         self._focus = "log"
         self.query_one("#log", RichLog).focus()
 
-        # Once the log is focused, update the hint to explain how to get back.
         try:
             self.query_one("#sidebar_hint", Label).update("[Esc] to Change Service")
         except NoMatches:
             pass
 
     def action_unfocus(self) -> None:
-        """Return focus back to the services list (and re-enable → to interact)."""
+        """Return focus to the services list (Escape)."""
 
         self._focus = "list"
         self.query_one("#services", ListView).focus()
@@ -469,33 +512,23 @@ class ServicesUI(App[None]):
 
     def action_toggle_fullscreen(self) -> None:
         sidebar = self.query_one("#sidebar", Vertical)
-        entering_fullscreen = self._sidebar_visible
-        self._sidebar_visible = not self._sidebar_visible
-        sidebar.styles.display = "block" if self._sidebar_visible else "none"
-        self._sync_log_scrollbars()
-
-        if entering_fullscreen:
-            self._focus = "log"
-            self.query_one("#log", RichLog).focus()
-            try:
-                self.query_one("#sidebar_hint", Label).update("[Esc] to Change Service")
-            except NoMatches:
-                pass
-
-    def _sync_log_scrollbars(self) -> None:
         log = self.query_one("#log", RichLog)
-        if hasattr(log, "show_vertical_scrollbar"):
-            log.show_vertical_scrollbar = False
-        if hasattr(log, "show_horizontal_scrollbar"):
-            log.show_horizontal_scrollbar = False
+        self._sidebar_visible = not self._sidebar_visible
+
+        if self._sidebar_visible:
+            sidebar.remove_class("fullscreen")
+            log.remove_class("fullscreen")
+            self.action_unfocus()
+        else:
+            self.action_interact()
+            sidebar.add_class("fullscreen")
+            log.add_class("fullscreen")
 
     def action_log_line_up(self) -> None:
-        # Scroll log up without changing focus.
         log = self.query_one("#log", RichLog)
         log.scroll_to(y=max(0, log.scroll_y - 1))
 
     def action_log_line_down(self) -> None:
-        # Scroll log down without changing focus.
         log = self.query_one("#log", RichLog)
         log.scroll_to(y=log.scroll_y + 1)
 
@@ -509,16 +542,36 @@ class ServicesUI(App[None]):
 
     def action_log_fast_left(self) -> None:
         log = self.query_one("#log", RichLog)
-        log.scroll_to(x=max(0, log.scroll_x - 2))
+        log.scroll_to(x=max(0, log.scroll_x - 4))
 
     def action_log_fast_right(self) -> None:
         log = self.query_one("#log", RichLog)
-        log.scroll_to(x=log.scroll_x + 2)
+        log.scroll_to(x=log.scroll_x + 4)
 
     def action_log_top(self) -> None:
-        # Jump to top.
         self.query_one("#log", RichLog).scroll_to(y=0, animate=False)
 
     def action_log_bottom(self) -> None:
-        # Jump to bottom.
         self.query_one("#log", RichLog).scroll_end(animate=False)
+
+    async def action_request_quit(self) -> None:
+        """Gracefully shut down all services."""
+        shutdown_msg = Text.from_markup(
+            f"[bold #F5F536]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/] "
+            "[bold #F14C4C]SHUTDOWN[/] Gracefully stopping services..."
+        )
+        for name in self._logs:
+            self._logs[name].append(shutdown_msg)
+
+        if self._selected:
+            try:
+                self.query_one("#log", RichLog).write(shutdown_msg)
+            except NoMatches:
+                pass
+
+        for name in self._status:
+            self._status[name] = ServiceStatus.failed  # Use failed icon temporarily
+            self._update_service_label(name)
+
+        await asyncio.sleep(0.1)
+        self.exit()

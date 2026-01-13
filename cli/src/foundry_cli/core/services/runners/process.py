@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import signal
+import sys
 from asyncio.subprocess import Process
-from datetime import datetime
 from pathlib import Path
 from typing import AsyncIterator, Sequence
 
@@ -14,12 +16,29 @@ from foundry_cli.core.services.runners.base import (
 )
 
 
+def _kill_process_tree(pid: int) -> None:
+    """Kill a process and all its children (handles mvnw -> java on Windows)."""
+    import subprocess
+
+    if sys.platform == "win32":
+        try:
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=10.0)
+        except Exception:
+            pass
+    else:
+        try:
+            os.killpg(os.getpgid(pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+
+
 async def _read_stream(
     service_name: str,
     stream_name: str,
     stream: asyncio.StreamReader,
     queue: "asyncio.Queue[ServiceLogEvent]",
 ) -> None:
+    """Continuously read lines from a stream and queue them as log events."""
     try:
         while True:
             raw = await stream.readline()
@@ -30,22 +49,15 @@ async def _read_stream(
     except asyncio.CancelledError:
         raise
     except Exception as e:
-        await queue.put(
-            ServiceLogEvent(
-                service_name=service_name,
-                stream=stream_name,  # type: ignore[arg-type]
-                line=f"<stream error: {e}>",
-            )
-        )
+        await queue.put(ServiceLogEvent(service_name=service_name, stream=stream_name, line=f"<stream error: {e}>"))
 
 
 class ProcessBackedRunner(ServiceRunner):
-    """Base class for runners that are backed by a single long-running subprocess."""
+    """Base class for runners backed by a subprocess."""
 
     def __init__(self, service, *, debug: bool = False) -> None:
         super().__init__(service)
         self._debug = debug
-
         self._proc: Process | None = None
         self._log_queue: asyncio.Queue[ServiceLogEvent] = asyncio.Queue()
         self._status_queue: asyncio.Queue[ServiceStatusEvent] = asyncio.Queue()
@@ -58,6 +70,7 @@ class ProcessBackedRunner(ServiceRunner):
         cwd: Path | None = None,
         env: dict[str, str] | None = None,
     ) -> Process:
+        """Spawn a subprocess and start reading its stdout/stderr."""
         if self._proc and self._proc.returncode is None:
             return self._proc
 
@@ -67,8 +80,7 @@ class ProcessBackedRunner(ServiceRunner):
 
         await self._status_queue.put(
             ServiceStatusEvent(
-                self.name,
-                ServiceStatus.starting,
+                self.name, ServiceStatus.starting,
                 detail=f"Initializing: {' '.join(argv_list)}",
                 level="INFO",
             )
@@ -91,21 +103,18 @@ class ProcessBackedRunner(ServiceRunner):
         ]
 
         await self._log_queue.put(
-            ServiceLogEvent(
-                self.name,
-                "stdout",
-                f"spawned pid={self._proc.pid} cwd={cwd or self.cwd}",
-                level="DEBUG",
-            )
+            ServiceLogEvent(self.name, "stdout", f"spawned pid={self._proc.pid} cwd={cwd or self.cwd}", level="DEBUG")
         )
 
         return self._proc
 
     async def stop(self) -> None:
+        """Stop the subprocess, killing the entire process tree on Windows."""
         if not self._proc:
             return
 
         proc = self._proc
+        pid = proc.pid
         self._proc = None
 
         for t in self._reader_tasks:
@@ -113,20 +122,43 @@ class ProcessBackedRunner(ServiceRunner):
         await asyncio.gather(*self._reader_tasks, return_exceptions=True)
         self._reader_tasks = []
 
-        if proc.returncode is None:
-            try:
-                proc.terminate()
-            except ProcessLookupError:
-                return
-
-            try:
-                await asyncio.wait_for(proc.wait(), timeout=5.0)
-            except asyncio.TimeoutError:
+        if proc.returncode is None and pid is not None:
+            if sys.platform == "win32":
+                _kill_process_tree(pid)
                 try:
                     proc.kill()
                 except ProcessLookupError:
-                    return
-                await proc.wait()
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=5.0)
+                except asyncio.TimeoutError:
+                    pass
+            else:
+                try:
+                    proc.terminate()
+                except ProcessLookupError:
+                    pass
+                try:
+                    await asyncio.wait_for(proc.wait(), timeout=2.0)
+                except asyncio.TimeoutError:
+                    _kill_process_tree(pid)
+                    try:
+                        proc.kill()
+                    except ProcessLookupError:
+                        pass
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=3.0)
+                    except asyncio.TimeoutError:
+                        pass
+
+        # Close transport to avoid "Event loop is closed" errors on Windows
+        try:
+            if proc._transport is not None:
+                proc._transport.close()
+        except Exception:
+            pass
+
+        await asyncio.sleep(0.1)
 
     async def _events(self) -> AsyncIterator[ServiceLogEvent]:
         while True:

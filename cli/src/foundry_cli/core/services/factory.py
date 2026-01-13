@@ -24,25 +24,39 @@ class _UnsupportedServiceRunner(ServiceRunner):
 
 def create_runner(service: DiscoveredService, *, debug: bool = False):
     rt = service.runtime.runtime
+    cfg = service.config
 
     # Maven / Spring Boot
     if rt == ServiceRuntime.spring_boot:
-        # TODO: infer port, or read from manifest/config.
         return SpringBootServiceRunner(
             service,
             debug=debug,
-            port=8080,
-            actuator_port=9000,
+            port=cfg.port or 8080,
+            actuator_port=cfg.actuator_port or 9000,
             dependency_manager="maven",
+            args=cfg.args,
+            env=cfg.env,
         )
 
     # Next.js
     if rt == ServiceRuntime.nextjs:
-        return NodeServiceRunner(service, debug=debug)
+        return NodeServiceRunner(
+            service,
+            debug=debug,
+            port=cfg.port,
+            args=cfg.args,
+            env=cfg.env,
+        )
 
     # FastAPI
     if rt == ServiceRuntime.fastapi:
-        return UvicornServiceRunner(service, debug=debug)
+        return UvicornServiceRunner(
+            service,
+            debug=debug,
+            port=cfg.port,
+            args=cfg.args,
+            env=cfg.env,
+        )
 
     # Fallback
     return _UnsupportedServiceRunner(service)

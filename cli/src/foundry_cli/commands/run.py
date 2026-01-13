@@ -21,19 +21,12 @@ def run(ctx: click.Context, debug: bool) -> None:
 @run.command()
 @click.pass_context
 def dev(ctx: click.Context) -> None:
-    """Run the platform in development mode.
-
-    This opens the turbo-like Services UI.
-
-    For now this doesn't start real processes; it just prints hello-world logs.
-    """
+    """Run the platform in development mode with the Services UI."""
     workspace, services_root, services = load_workspace()
-
     debug = bool((ctx.obj or {}).get("debug"))
 
-    project_name = workspace.manifests[0].name or "Unnamed Project"
-
     if debug:
+        project_name = workspace.manifests[0].name or "Unnamed Project"
         print(f"Project: {project_name}")
         print(f"Services root: {services_root}")
 
@@ -45,15 +38,13 @@ def dev(ctx: click.Context) -> None:
     if debug:
         print("Discovered services:")
         for svc in services:
-            print(
-                f"  - {svc.name} ({svc.kind}) [{svc.runtime.runtime}] ({svc.runtime.evidence})\n"
-                f"    {svc.path}"
-            )
+            print(f"  - {svc.name} ({svc.kind}) [{svc.runtime.runtime}] ({svc.runtime.evidence})")
+            print(f"    {svc.path}")
 
     runners = {svc.name: create_runner(svc, debug=debug) for svc in services}
-
-    # Silence non-debug output; the UI is the output.
     app = ServicesUI(services, runners, debug=debug)
     app.run()
+
+    click.echo(click.style("Shutdown gracefully. Goodbye!", fg="green", bold=True))
     
     

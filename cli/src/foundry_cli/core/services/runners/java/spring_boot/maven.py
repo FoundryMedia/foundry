@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import socket
 from pathlib import Path
-
 from typing import Literal
 
 from foundry_cli.core.services.health import HealthCheckConfig, wait_for_http_healthy
@@ -12,9 +12,11 @@ from foundry_cli.core.services.runners.process import ProcessBackedRunner
 
 
 DependencyManager = Literal["maven", "gradle"]
+STARTUP_TIMEOUT_S = 60.0
 
 
 def _find_mvnw(service_dir: Path) -> Path | None:
+    """Find Maven wrapper in the service directory."""
     for name in ("mvnw.cmd", "mvnw"):
         p = service_dir / name
         if p.exists():
@@ -23,6 +25,7 @@ def _find_mvnw(service_dir: Path) -> Path | None:
 
 
 def _is_port_open(host: str, port: int) -> bool:
+    """Check if a port is accepting connections."""
     try:
         with socket.create_connection((host, port), timeout=0.25):
             return True
@@ -30,19 +33,11 @@ def _is_port_open(host: str, port: int) -> bool:
         return False
 
 
-STARTUP_TIMEOUT_S = 60.0
-
-
 class SpringBootServiceRunner(ProcessBackedRunner):
-    """Runs a Spring Boot (Maven) service.
-
-    Current readiness strategy:
-    - If a port can be determined, wait for it to accept TCP connections.
-    - Otherwise, mark healthy once the process is running.
-
-    Notes:
-    - This is intentionally conservative and works without requiring actuator.
-    - Next iteration can read `server.port` from env/config and/or call an HTTP health endpoint.
+    """Runs a Spring Boot service via Maven wrapper.
+    
+    Uses HTTP health checks (actuator preferred) to determine readiness.
+    A background monitor watches for process exit and marks service as failed.
     """
 
     def __init__(
@@ -53,18 +48,22 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         port: int | None = 8080,
         actuator_port: int | None = 9000,
         dependency_manager: DependencyManager = "maven",
+        args: tuple[str, ...] = (),
+        env: dict[str, str] | None = None,
     ) -> None:
         super().__init__(service, debug=debug)
         self._port = port
         self._actuator_port = actuator_port
         self._dep = dependency_manager
+        self._args = args
+        self._env = env or {}
+        self._process_monitor_task: asyncio.Task | None = None
 
     async def start(self) -> None:
         if self._dep != "maven":
             await self._status_queue.put(
                 ServiceStatusEvent(
-                    self.name,
-                    ServiceStatus.failed,
+                    self.name, ServiceStatus.failed,
                     detail=f"Unsupported dependency manager: {self._dep}",
                     error="Only Maven is supported right now.",
                     level="ERROR",
@@ -76,8 +75,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         if mvnw is None:
             await self._status_queue.put(
                 ServiceStatusEvent(
-                    self.name,
-                    ServiceStatus.failed,
+                    self.name, ServiceStatus.failed,
                     detail="No Maven wrapper found",
                     error="Expected mvnw.cmd (Windows) or mvnw in this service directory.",
                     level="ERROR",
@@ -85,12 +83,10 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             )
             return
 
-        pom = self.cwd / "pom.xml"
-        if not pom.exists():
+        if not (self.cwd / "pom.xml").exists():
             await self._status_queue.put(
                 ServiceStatusEvent(
-                    self.name,
-                    ServiceStatus.failed,
+                    self.name, ServiceStatus.failed,
                     detail="No pom.xml",
                     error="Expected pom.xml in this service directory.",
                     level="ERROR",
@@ -98,118 +94,124 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             )
             return
 
-        proc = await self._spawn([str(mvnw), "-q", "spring-boot:run"], cwd=self.cwd)
+        cmd = [str(mvnw), "-q", "spring-boot:run"]
+        if self._args:
+            args_str = ",".join(self._args)
+            cmd.append(f"-Dspring-boot.run.arguments={args_str}")
 
-        # If Maven fails quickly (missing deps, compilation failure), reflect that.
+        run_env = {**os.environ, **self._env} if self._env else None
+        proc = await self._spawn(cmd, cwd=self.cwd, env=run_env)
+
+        # Start monitor immediately - emits "failed" if process ever exits
+        self._process_monitor_task = asyncio.create_task(self._monitor_process_health(proc))
+
+        # Quick check for immediate failures (missing deps, compile errors)
         await asyncio.sleep(0.25)
-        if proc.returncode is not None and proc.returncode != 0:
-            await self._status_queue.put(
-                ServiceStatusEvent(
-                    self.name,
-                    ServiceStatus.failed,
-                    detail=f"Maven exited ({proc.returncode})",
-                    error="mvn spring-boot:run failed. See logs above.",
-                    level="ERROR",
-                )
-            )
-            return
+        if proc.returncode is not None:
+            return  # Monitor handles status
 
-        # Readiness check strategy:
-        # - If we know the port, prefer an HTTP health ping (Actuator if available).
-        # - Always fail if the process exits before we confirm readiness.
         if self._port is not None:
             await self._status_queue.put(
                 ServiceStatusEvent(
-                    self.name,
-                    ServiceStatus.starting,
+                    self.name, ServiceStatus.starting,
                     detail=f"Waiting for health (app:{self._port}, actuator:{self._actuator_port or self._port})",
                     level="DEBUG",
                 )
             )
-
             try:
-                await asyncio.wait_for(
-                    self._wait_for_ready(
-                        proc,
-                        host="127.0.0.1",
-                        port=self._port,
-                        actuator_port=self._actuator_port,
-                    ),
-                    timeout=STARTUP_TIMEOUT_S,
-                )
+                await asyncio.wait_for(self._wait_for_ready(proc), timeout=STARTUP_TIMEOUT_S)
             except asyncio.TimeoutError:
-                await self._status_queue.put(
-                    ServiceStatusEvent(
-                        self.name,
-                        ServiceStatus.failed,
-                        detail=f"Timed out waiting for readiness on port {self._port}",
-                        error=f"Service didn't become reachable/healthy within {STARTUP_TIMEOUT_S:.0f}s.",
-                        level="ERROR",
+                if proc.returncode is None:  # Only timeout if still running
+                    await self._status_queue.put(
+                        ServiceStatusEvent(
+                            self.name, ServiceStatus.failed,
+                            detail=f"Timed out waiting for readiness on port {self._port}",
+                            error=f"Service didn't become healthy within {STARTUP_TIMEOUT_S:.0f}s.",
+                            level="ERROR",
+                        )
                     )
+        else:
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.starting,
+                    detail="Process running; no port configured for health check",
+                    level="DEBUG",
                 )
-                return
-            except RuntimeError as e:
-                await self._status_queue.put(
-                    ServiceStatusEvent(
-                        self.name,
-                        ServiceStatus.failed,
-                        detail="Process exited before ready",
-                        error=str(e),
-                        level="ERROR",
-                    )
-                )
-                return
-
-        await self._status_queue.put(
-            ServiceStatusEvent(
-                self.name,
-                ServiceStatus.starting,
-                detail="Process running; waiting for health check (port unknown)",
-                level="DEBUG",
             )
-        )
 
-    async def _wait_for_port(self, host: str, port: int) -> None:
-        while True:
-            if _is_port_open(host, port):
-                return
-            await asyncio.sleep(0.25)
+    async def _wait_for_ready(self, proc) -> None:
+        """Poll HTTP health endpoints until service is ready. Exits if process dies."""
+        host = "127.0.0.1"
+        port = self._port
+        actuator_port = self._actuator_port
 
-    async def _wait_for_ready(self, proc, *, host: str, port: int, actuator_port: int | None) -> None:
-        """Wait for the service to become ready, or raise if the process exits."""
+        await asyncio.sleep(10.0)  # Give Spring Boot time to start
 
         while True:
             if proc.returncode is not None:
-                raise RuntimeError(f"Service process exited with code {proc.returncode}.")
+                return  # Process exited, monitor handles status
 
-            # Prefer Spring Boot Actuator health if present.
+            main_open = _is_port_open(host, port)
+            actuator_open = _is_port_open(host, actuator_port) if actuator_port and actuator_port != port else True
+
+            if not main_open or (actuator_port and not actuator_open):
+                await asyncio.sleep(0.35)
+                continue
+
             probe_port = actuator_port or port
-            if _is_port_open(host, probe_port):
-                for url in (
-                    f"http://{host}:{probe_port}/actuator/health",
-                    f"http://{host}:{probe_port}/health",
-                    f"http://{host}:{probe_port}/",
-                ):
-                    try:
-                        await wait_for_http_healthy(
-                            HealthCheckConfig(
-                                url=url,
-                                timeout_s=0.75,
-                                interval_s=0.35,
-                                startup_timeout_s=0.75,
-                            )
+            for url, require_up in (
+                (f"http://{host}:{probe_port}/actuator/health", True),
+                (f"http://{host}:{probe_port}/health", True),
+                (f"http://{host}:{probe_port}/", False),
+            ):
+                try:
+                    await wait_for_http_healthy(
+                        HealthCheckConfig(
+                            url=url, timeout_s=5.0, interval_s=1.0,
+                            startup_timeout_s=10.0, require_up_status=require_up,
                         )
-                        await self._status_queue.put(
-                            ServiceStatusEvent(
-                                self.name,
-                                ServiceStatus.healthy,
-                                detail=f"Healthy: {url}",
-                                level="INFO",
-                            )
-                        )
-                        return
-                    except Exception:
-                        # Try the next URL.
-                        pass
+                    )
+                except Exception:
+                    continue
+
+                if proc.returncode is not None:
+                    return  # Process died during check
+
+                await self._status_queue.put(
+                    ServiceStatusEvent(
+                        self.name, ServiceStatus.healthy,
+                        detail=f"Healthy: {url}",
+                        level="INFO",
+                    )
+                )
+                return
 
             await asyncio.sleep(0.35)
+
+    async def _monitor_process_health(self, proc) -> None:
+        """Background task that emits failed status when process exits."""
+        try:
+            await proc.wait()
+            exit_code = proc.returncode
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.failed,
+                    detail=f"Process exited (code {exit_code})",
+                    error="Process terminated unexpectedly." if exit_code == 0
+                          else f"Process exited with code {exit_code}. Check logs.",
+                    level="ERROR",
+                )
+            )
+        except asyncio.CancelledError:
+            pass  # Normal shutdown
+
+    async def stop(self) -> None:
+        """Stop service and cancel monitor to prevent spurious failure status."""
+        if self._process_monitor_task is not None:
+            self._process_monitor_task.cancel()
+            try:
+                await self._process_monitor_task
+            except asyncio.CancelledError:
+                pass
+            self._process_monitor_task = None
+        await super().stop()
