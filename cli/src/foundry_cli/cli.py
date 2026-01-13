@@ -1,6 +1,26 @@
 from __future__ import annotations
 
+import os
+import sys
+
 import click
+
+# Enable ANSI color support on Windows cmd/powershell
+if sys.platform == "win32":
+    # Method 1: Use colorama if available (handles older Windows)
+    try:
+        import colorama
+        colorama.just_fix_windows_console()
+    except ImportError:
+        pass
+    # Method 2: Enable VT100 processing via Windows API (Windows 10+)
+    try:
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        # Enable ENABLE_VIRTUAL_TERMINAL_PROCESSING for stdout
+        kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
+    except Exception:
+        pass
 
 from foundry_cli.core.cli import FoundryGroup
 from foundry_cli.core.errors import FoundryError

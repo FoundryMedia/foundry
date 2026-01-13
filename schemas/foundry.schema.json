@@ -40,6 +40,20 @@
       "pattern": "^[a-z0-9-]+$"
     },
 
+    "servicesDir": {
+      "description": "Relative path to the directory containing runnable services (default: 'apps').",
+      "type": "string",
+      "default": "apps"
+    },
+
+    "services": {
+      "description": "Launch configurations for discovered services. Keys are service names (directory names).",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/definitions/serviceConfig"
+      }
+    },
+
     "ci": {
       "description": "Continuous Integration and infrastructure orchestration configuration.",
 
@@ -59,6 +73,48 @@
           "enum": ["aws"]
         }
       }
+    }
+  },
+
+  "definitions": {
+    "serviceConfig": {
+      "type": "object",
+      "description": "Launch configuration for a single service.",
+      "properties": {
+        "enabled": {
+          "description": "Whether this service should be started by `foundry run`. Defaults to true.",
+          "type": "boolean",
+          "default": true
+        },
+        "port": {
+          "description": "The primary port the service listens on.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "actuatorPort": {
+          "description": "The port for health/actuator endpoints (Spring Boot). Defaults to port if not set.",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "args": {
+          "description": "Additional command-line arguments to pass to the service start command.",
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "env": {
+          "description": "Environment variables to set when running the service.",
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "additionalProperties": false
     }
   }
 }

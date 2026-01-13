@@ -12,9 +12,20 @@ from foundry_cli.core.services.runners.base import (
 class UvicornServiceRunner(ServiceRunner):
     """Placeholder for FastAPI/Uvicorn services."""
 
-    def __init__(self, service, *, debug: bool = False) -> None:
+    def __init__(
+        self,
+        service,
+        *,
+        debug: bool = False,
+        port: int | None = None,
+        args: tuple[str, ...] = (),
+        env: dict[str, str] | None = None,
+    ) -> None:
         super().__init__(service)
         self._debug = debug
+        self._port = port
+        self._args = args
+        self._env = env or {}
         self._status_timeout_s = 60.0
 
     async def start(self) -> None:
