@@ -101,13 +101,28 @@ class ServicesUI(App[None]):
 
     BINDINGS = [
         ("ctrl+c", "quit", "Quit"),
-        ("tab", "toggle_focus", "Focus Log"),
-        ("f", "toggle_fullscreen", "Fullscreen"),
+
+        # Navigation / focus
+        ("right", "interact", "Interact"),
+        ("escape", "unfocus", "Exit"),
+
+        # Layout
+        ("tab", "toggle_fullscreen", "Fullscreen"),
+
+        # Log scrolling (when log is focused)
         ("u", "log_line_up", "Scroll Up"),
         ("d", "log_line_down", "Scroll Down"),
         ("t", "log_top", "Top"),
         ("b", "log_bottom", "Bottom"),
     ]
+
+    # The stock Textual footer renders a limited set of bindings and can feel
+    # "order dependent" when we add more shortcuts. Make the footer explicit so
+    # important actions (like Fullscreen) don't disappear as we evolve bindings.
+    FOOTER_BINDINGS: set[str] = {
+        "toggle_fullscreen",
+        "quit",
+    }
 
     def __init__(
         self,
@@ -139,7 +154,7 @@ class ServicesUI(App[None]):
         with Horizontal():
             with Vertical(id="sidebar"):
                 yield Label("Services", id="sidebar_title")
-                yield Label("↑/↓ Select • Tab to Interact", id="sidebar_hint")
+                yield Label("↑/↓ Select • → to Interact", id="sidebar_hint")
                 lv = ListView(id="services")
                 for svc in self._services:
                     safe_id = f"svc-{svc.name}".replace(" ", "-")
@@ -150,6 +165,17 @@ class ServicesUI(App[None]):
                 yield lv
             yield RichLog(id="log", highlight=False, markup=False, wrap=False)
         yield Footer()
+
+    def on_mount(self) -> None:
+        # ...existing code...
+        super().on_mount()
+
+        try:
+            footer = self.query_one(Footer)
+            footer.styles.display = "block"
+            footer.show_bindings = lambda binding: binding.action in self.FOOTER_BINDINGS 
+        except Exception:
+            pass
 
     def _update_service_label(self, service_name: str) -> None:
         safe_id = f"svc-{service_name}".replace(" ", "-")
@@ -357,9 +383,32 @@ class ServicesUI(App[None]):
         self._selected = name_s
         self._render_selected()
 
-    def action_toggle_focus(self) -> None:
+    def action_interact(self) -> None:
+        """Focus the log pane.
+
+        Bound to Right Arrow so we don't steal Tab (used for horizontal scrolling)
+        and to avoid changing list selection when the user just wants to interact.
+        """
+
         self._focus = "log"
         self.query_one("#log", RichLog).focus()
+
+        # Once the log is focused, update the hint to explain how to get back.
+        try:
+            self.query_one("#sidebar_hint", Label).update("Esc to Exit")
+        except NoMatches:
+            pass
+
+    def action_unfocus(self) -> None:
+        """Return focus back to the services list (and re-enable → to interact)."""
+
+        self._focus = "list"
+        self.query_one("#services", ListView).focus()
+
+        try:
+            self.query_one("#sidebar_hint", Label).update("↑/↓ Select • → Interact")
+        except NoMatches:
+            pass
 
     def action_toggle_fullscreen(self) -> None:
         sidebar = self.query_one("#sidebar", Vertical)
@@ -384,7 +433,7 @@ class ServicesUI(App[None]):
 
     def action_log_top(self) -> None:
     # Jump to top.
-        self.query_one("#log", RichLog).scroll_to(y=0)
+        self.query_one("#log", RichLog).scroll_to(y=0, animate=False)
 
     def action_log_bottom(self) -> None:
     # Jump to bottom.
