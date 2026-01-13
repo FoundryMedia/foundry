@@ -285,7 +285,7 @@ class ServicesUI(App[None]):
 
         log = self.query_one("#log", RichLog)
         if hasattr(log, "show_vertical_scrollbar"):
-            log.show_vertical_scrollbar = False
+            log.show_vertical_scrollbar = True
         if hasattr(log, "show_horizontal_scrollbar"):
             log.show_horizontal_scrollbar = False
 
@@ -475,6 +475,9 @@ class ServicesUI(App[None]):
         sidebar = self.query_one("#sidebar", Vertical)
         self._sidebar_visible = not self._sidebar_visible
         sidebar.styles.display = "block" if self._sidebar_visible else "none"
+        log = self.query_one("#log", RichLog)
+        if hasattr(log, "show_vertical_scrollbar"):
+            log.show_vertical_scrollbar = self._sidebar_visible
 
     def action_log_line_up(self) -> None:
         # Scroll log up without changing focus.
