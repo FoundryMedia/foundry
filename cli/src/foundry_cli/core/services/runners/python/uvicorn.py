@@ -46,5 +46,6 @@ class UvicornServiceRunner(ServiceRunner):
                     "FastAPI/Uvicorn runner not implemented yet, so readiness couldn't be confirmed. "
                     f"Timed out after {self._status_timeout_s:.0f}s."
                 ),
+                level="ERROR",
             )
         return _one_shot()
