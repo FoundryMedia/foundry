@@ -153,8 +153,6 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                 )
                 return
 
-        # If we don't know the port yet, we can't do a real health check.
-        # Keep it "starting" until we implement port discovery.
         await self._status_queue.put(
             ServiceStatusEvent(
                 self.name,
