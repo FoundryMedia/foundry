@@ -69,7 +69,7 @@ class ProcessBackedRunner(ServiceRunner):
             ServiceStatusEvent(
                 self.name,
                 ServiceStatus.starting,
-                detail=f"Starting Service: {' '.join(argv_list)}",
+                detail=f"Initializing: {' '.join(argv_list)}",
                 level="INFO",
             )
         )
@@ -90,7 +90,6 @@ class ProcessBackedRunner(ServiceRunner):
             asyncio.create_task(_read_stream(self.name, "stderr", self._proc.stderr, self._log_queue)),
         ]
 
-        # Emit as a plain line; the UI will decide how to style it.
         await self._log_queue.put(
             ServiceLogEvent(
                 self.name,
