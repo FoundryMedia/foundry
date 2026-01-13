@@ -50,7 +50,7 @@ class ServicesUI(App[None]):
     #sidebar {
         width: 34;
         min-width: 24;
-        border: tall $boost;
+        border: none;
     }
 
     #sidebar_title {
@@ -90,7 +90,7 @@ class ServicesUI(App[None]):
     }
 
     #log {
-        border: tall $boost;
+        border: none;
     }
 
     Footer {
@@ -230,6 +230,12 @@ class ServicesUI(App[None]):
 
         # Rich helper for decoding ANSI-colored process output.
         self._ansi_decoder = AnsiDecoder()
+
+        log = self.query_one("#log", RichLog)
+        if hasattr(log, "show_vertical_scrollbar"):
+            log.show_vertical_scrollbar = False
+        if hasattr(log, "show_horizontal_scrollbar"):
+            log.show_horizontal_scrollbar = False
 
 
     def _tick_spinner(self) -> None:
@@ -417,19 +423,6 @@ class ServicesUI(App[None]):
         sidebar = self.query_one("#sidebar", Vertical)
         self._sidebar_visible = not self._sidebar_visible
         sidebar.styles.display = "block" if self._sidebar_visible else "none"
-
-        log = self.query_one("#log", RichLog)
-        show_scrollbars = self._sidebar_visible
-        if hasattr(log, "show_vertical_scrollbar"):
-            log.show_vertical_scrollbar = show_scrollbars
-        if hasattr(log, "show_horizontal_scrollbar"):
-            log.show_horizontal_scrollbar = show_scrollbars
-
-        if not self._selected or self._focus != "list":
-            self._select_hovered_service()
-
-        self._focus = "log"
-        log.focus()
 
     def action_log_line_up(self) -> None:
         # Scroll log up without changing focus.
