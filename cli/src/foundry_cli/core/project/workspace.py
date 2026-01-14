@@ -6,8 +6,8 @@ from pathlib import Path
 
 from foundry_cli.core.errors import FoundryError
 
-from foundry_cli.core.project.manifest import ProjectManifest, load_manifest_from_path
-from foundry_cli.core.project.service_runtime import RuntimeMatch, detect_runtime
+from foundry_cli.core.project.manifest import ProjectManifest, ServiceConfig, load_manifest_from_path
+from foundry_cli.core.project.service_runtime import RuntimeMatch, ServiceRuntime, detect_runtime
 
 
 @dataclass(frozen=True)
@@ -33,6 +33,7 @@ class DiscoveredService:
     path: Path
     runtime: RuntimeMatch
     kind: "ServiceKind"
+    config: ServiceConfig = ServiceConfig()
 
 
 class ServiceKind(str, Enum):
@@ -117,10 +118,12 @@ def resolve_services_root(manifest: ProjectManifest) -> Path:
     return root
 
 
-def discover_services(services_root: Path) -> list[DiscoveredService]:
+def discover_services(services_root: Path, manifest: ProjectManifest | None = None) -> list[DiscoveredService]:
     """Discover service folders inside the services root.
 
     Current heuristic: immediate child directories that do not start with '.' or '_'.
+
+    If a manifest is provided, service configs from foundry.json are merged in.
     """
 
     services: list[DiscoveredService] = []
@@ -146,6 +149,7 @@ def discover_services(services_root: Path) -> list[DiscoveredService]:
                         path=nested,
                         runtime=detect_runtime(nested),
                         kind=infer_service_kind(services_root, nested),
+                        config=manifest.get_service_config(n) if manifest else ServiceConfig(),
                     )
                 )
             continue
@@ -156,25 +160,88 @@ def discover_services(services_root: Path) -> list[DiscoveredService]:
                 path=child,
                 runtime=detect_runtime(child),
                 kind=infer_service_kind(services_root, child),
+                config=manifest.get_service_config(name) if manifest else ServiceConfig(),
             )
         )
     return services
 
 
-def load_workspace(start: Path | None = None) -> tuple[FoundryWorkspace, Path, list[DiscoveredService]]:
+def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[FoundryWorkspace, Path, list[DiscoveredService]]:
     """Load the current workspace and discover local services.
+
+    For non-Node services (Spring Boot, FastAPI), discovers from the apps/ directory.
+    For Node packages, discovers all workspace packages that have the requested npm script.
+
+    Args:
+        start: Starting directory to search from (defaults to CWD)
+        command: The npm script to look for (e.g., "dev", "build")
 
     Returns:
       (workspace, services_root, services)
     """
+    from foundry_cli.core.project.packages import (
+        find_packages_with_script,
+        sort_packages_by_dependency_order,
+    )
 
     manifest_path = find_manifest_path(start)
     manifest = load_manifest_from_path(manifest_path)
     services_root = resolve_services_root(manifest)
-    services = discover_services(services_root)
+    workspace_root = manifest_path.parent
 
-    ws = FoundryWorkspace(root=manifest_path.parent, manifests=(manifest,))
-    return ws, services_root, services
+    # Discover traditional services (Spring Boot, FastAPI, etc.) from apps/
+    traditional_services = discover_services(services_root, manifest)
+    
+    # Filter to only non-Node services (Spring Boot, FastAPI)
+    non_node_services = [
+        s for s in traditional_services 
+        if s.runtime.runtime not in (ServiceRuntime.nextjs, ServiceRuntime.unknown)
+    ]
+
+    # Discover Node packages that have the requested script
+    node_packages = find_packages_with_script(workspace_root, command)
+    node_packages = sort_packages_by_dependency_order(node_packages)
+    
+    # Convert Node packages to DiscoveredService
+    node_services = []
+    for pkg in node_packages:
+        # Determine kind based on path
+        kind = ServiceKind.unknown
+        try:
+            rel = pkg.path.relative_to(workspace_root)
+            parts = rel.parts
+            if "frontend" in parts:
+                kind = ServiceKind.frontend
+            elif "backend" in parts:
+                kind = ServiceKind.backend
+            elif "packages" in parts:
+                kind = ServiceKind.unknown  # shared packages
+        except ValueError:
+            pass
+
+        # Use the short name (without @repo/ prefix) for display
+        display_name = pkg.name
+        if "/" in display_name:
+            display_name = display_name.split("/")[-1]
+
+        node_services.append(
+            DiscoveredService(
+                name=display_name,
+                path=pkg.path,
+                runtime=RuntimeMatch(ServiceRuntime.nextjs, f"package.json: has '{command}' script"),
+                kind=kind,
+                config=manifest.get_service_config(display_name),
+            )
+        )
+
+    # Combine: Node packages first (dependencies before dependents), then other services
+    all_services = node_services + non_node_services
+
+    # Filter out disabled services
+    all_services = [s for s in all_services if s.config.enabled]
+
+    ws = FoundryWorkspace(root=workspace_root, manifests=(manifest,))
+    return ws, services_root, all_services
 
 
 __all__ = [

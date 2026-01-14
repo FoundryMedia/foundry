@@ -2,10 +2,10 @@ from __future__ import annotations
 
 from foundry_cli.core.project.service_runtime import ServiceRuntime
 from foundry_cli.core.project.workspace import DiscoveredService
-from foundry_cli.core.services.spring_boot_runner import SpringBootServiceRunner
-from foundry_cli.core.services.node_runner import NodeServiceRunner
-from foundry_cli.core.services.uvicorn_runner import UvicornServiceRunner
-from foundry_cli.core.services.service_runner import ServiceRunner
+from foundry_cli.core.services.runners.base import ServiceRunner
+from foundry_cli.core.services.runners.java.spring_boot.maven import SpringBootServiceRunner
+from foundry_cli.core.services.runners.node.nextjs import NodeServiceRunner
+from foundry_cli.core.services.runners.python.uvicorn import UvicornServiceRunner
 
 
 class _UnsupportedServiceRunner(ServiceRunner):
@@ -22,27 +22,44 @@ class _UnsupportedServiceRunner(ServiceRunner):
         return _empty()
 
 
-def create_runner(service: DiscoveredService, *, debug: bool = False):
+def create_runner(service: DiscoveredService, *, debug: bool = False, command: str = "dev"):
     rt = service.runtime.runtime
+    cfg = service.config
 
     # Maven / Spring Boot
     if rt == ServiceRuntime.spring_boot:
-        # TODO: infer port, or read from manifest/config.
         return SpringBootServiceRunner(
             service,
             debug=debug,
-            port=8080,
-            actuator_port=9000,
+            port=cfg.port or 8080,
+            actuator_port=cfg.actuator_port or 9000,
             dependency_manager="maven",
+            command=command,
+            args=cfg.args,
+            env=cfg.env,
         )
 
     # Next.js
     if rt == ServiceRuntime.nextjs:
-        return NodeServiceRunner(service, debug=debug)
+        return NodeServiceRunner(
+            service,
+            debug=debug,
+            port=cfg.port,
+            command=command,
+            args=cfg.args,
+            env=cfg.env,
+        )
 
     # FastAPI
     if rt == ServiceRuntime.fastapi:
-        return UvicornServiceRunner(service, debug=debug)
+        return UvicornServiceRunner(
+            service,
+            debug=debug,
+            port=cfg.port,
+            command=command,
+            args=cfg.args,
+            env=cfg.env,
+        )
 
     # Fallback
-    return _UnsupportedServiceRunner(service)
+    return _UnsupportedServiceRunner(service, command=command)
