@@ -2,12 +2,13 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime
+
 from typing import Literal
 
 
-LogLevel = Literal["INFO", "WARN", "ERROR", "SUCCESS"]
+LogLevel = Literal["DEBUG", "INFO", "WARN", "ERROR", "SUCCESS"]
 
-
+DEBUG_HEX = "#29B8DB"
 INFO_HEX = "#3B8EEA"
 WARN_HEX = "#F5F536"
 ERROR_HEX = "#F14C4C"
@@ -32,7 +33,9 @@ def format_log_line(line: LogLine) -> str:
     ts = line.timestamp.strftime("%Y-%m-%d %H:%M:%S")
     ts_s = f"[bold {RESET_HEX}]{ts}[/bold {RESET_HEX}]"
 
-    if line.level == "INFO":
+    if line.level == "DEBUG":
+        lvl_s = f"[bold {DEBUG_HEX}]DEBUG[/bold {DEBUG_HEX}]"
+    elif line.level == "INFO":
         lvl_s = f"[bold {INFO_HEX}]INFO[/bold {INFO_HEX}]"
     elif line.level == "WARN":
         lvl_s = f"[bold {WARN_HEX}]WARN[/bold {WARN_HEX}]"

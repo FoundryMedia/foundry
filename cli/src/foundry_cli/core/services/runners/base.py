@@ -6,6 +6,7 @@ from pathlib import Path
 from typing import AsyncIterator, Literal, Optional
 
 from foundry_cli.core.project.workspace import DiscoveredService
+from foundry_cli.core.util.logger import LogLevel
 
 
 StreamName = Literal["stdout", "stderr"]
@@ -16,6 +17,7 @@ class ServiceLogEvent:
     service_name: str
     stream: StreamName
     line: str
+    level: LogLevel | None = None
 
 
 class ServiceStatus(str):
@@ -38,6 +40,7 @@ class ServiceStatusEvent:
     status: ServiceStatus
     detail: str = ""
     error: Optional[str] = None
+    level: LogLevel = "INFO"
 
 
 class ServiceRunner(abc.ABC):
@@ -51,12 +54,18 @@ class ServiceRunner(abc.ABC):
     Runtimes can subclass this later (Spring Boot / NextJS / FastAPI).
     """
 
-    def __init__(self, service: DiscoveredService) -> None:
+    def __init__(self, service: DiscoveredService, *, command: str = "dev") -> None:
         self.service = service
+        self._command = command
 
     @property
     def name(self) -> str:
         return self.service.name
+
+    @property
+    def display_name(self) -> str:
+        """Display name for the UI (e.g., 'service#command')."""
+        return f"{self.service.name}#{self._command}"
 
     @property
     def cwd(self) -> Path:
