@@ -48,10 +48,11 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         port: int | None = 8080,
         actuator_port: int | None = 9000,
         dependency_manager: DependencyManager = "maven",
+        command: str = "dev",
         args: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
     ) -> None:
-        super().__init__(service, debug=debug)
+        super().__init__(service, debug=debug, command=command)
         self._port = port
         self._actuator_port = actuator_port
         self._dep = dependency_manager

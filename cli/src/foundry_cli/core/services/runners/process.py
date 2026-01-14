@@ -55,8 +55,8 @@ async def _read_stream(
 class ProcessBackedRunner(ServiceRunner):
     """Base class for runners backed by a subprocess."""
 
-    def __init__(self, service, *, debug: bool = False) -> None:
-        super().__init__(service)
+    def __init__(self, service, *, debug: bool = False, command: str = "dev") -> None:
+        super().__init__(service, command=command)
         self._debug = debug
         self._proc: Process | None = None
         self._log_queue: asyncio.Queue[ServiceLogEvent] = asyncio.Queue()

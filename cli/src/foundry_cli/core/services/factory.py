@@ -22,7 +22,7 @@ class _UnsupportedServiceRunner(ServiceRunner):
         return _empty()
 
 
-def create_runner(service: DiscoveredService, *, debug: bool = False):
+def create_runner(service: DiscoveredService, *, debug: bool = False, command: str = "dev"):
     rt = service.runtime.runtime
     cfg = service.config
 
@@ -34,6 +34,7 @@ def create_runner(service: DiscoveredService, *, debug: bool = False):
             port=cfg.port or 8080,
             actuator_port=cfg.actuator_port or 9000,
             dependency_manager="maven",
+            command=command,
             args=cfg.args,
             env=cfg.env,
         )
@@ -44,6 +45,7 @@ def create_runner(service: DiscoveredService, *, debug: bool = False):
             service,
             debug=debug,
             port=cfg.port,
+            command=command,
             args=cfg.args,
             env=cfg.env,
         )
@@ -54,9 +56,10 @@ def create_runner(service: DiscoveredService, *, debug: bool = False):
             service,
             debug=debug,
             port=cfg.port,
+            command=command,
             args=cfg.args,
             env=cfg.env,
         )
 
     # Fallback
-    return _UnsupportedServiceRunner(service)
+    return _UnsupportedServiceRunner(service, command=command)
