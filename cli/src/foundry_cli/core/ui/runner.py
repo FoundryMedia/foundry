@@ -26,6 +26,7 @@ from foundry_cli.core.services.runners.base import (
 
 from foundry_cli.core.util.logger import LogLine, format_log_line
 from foundry_cli.release.versioning import get_local_version
+from foundry_cli.release.update_check import check_for_updates
 
 
 @dataclass(frozen=True)
@@ -113,6 +114,19 @@ class ServicesUI(App[None]):
 
     #sidebar.fullscreen {
         display: none;
+    }
+
+    #update_banner {
+        padding: 1 1 0 1;
+        height: auto;
+    }
+
+    #update_banner_line1 {
+        height: 1;
+    }
+
+    #update_banner_link {
+        height: 1;
     }
 
     #sidebar_title {
@@ -222,8 +236,23 @@ class ServicesUI(App[None]):
 
         self._status: Dict[str, ServiceStatus] = {s.name: ServiceStatus.starting for s in services}
 
+        # Build display names from runners (fallback to service name if no runner)
+        self._display_names: Dict[str, str] = {}
+        for svc in services:
+            runner = runners.get(svc.name)
+            if runner:
+                self._display_names[svc.name] = runner.display_name
+            else:
+                self._display_names[svc.name] = svc.name
+
         self._focus: str = "list"
         self._is_vscode = os.environ.get("TERM_PROGRAM") == "vscode"
+
+        # Check for updates
+        try:
+            self._local_version, self._latest_version, self._update_url = check_for_updates()
+        except Exception:
+            self._local_version, self._latest_version, self._update_url = None, None, None
 
         if self._is_vscode:
             self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -235,14 +264,28 @@ class ServicesUI(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="sidebar"):
+                if self._latest_version and self._local_version:
+                    with Vertical(id="update_banner"):
+                        update_line1 = Text()
+                        update_line1.append("Update available: ", style="bold magenta")
+                        update_line1.append(self._local_version, style="bold red")
+                        update_line1.append(" → ", style="bold yellow")
+                        update_line1.append(self._latest_version, style="bold green")
+                        yield Label(update_line1, id="update_banner_line1")
+                        
+                        download_url = self._update_url or "https://github.com/FoundryMedia/foundry/releases/latest"
+                        link_text = Text()
+                        link_text.append("Click to download", style="bold underline blue link " + download_url)
+                        yield Label(link_text, id="update_banner_link")
                 yield Label("Services", id="sidebar_title")
                 yield Label("↑/↓ Select • → to Interact", id="sidebar_hint")
                 lv = ListView(id="services")
                 for svc in self._services:
                     safe_id = f"svc-{svc.name}".replace(" ", "-")
+                    display_name = self._display_names.get(svc.name, svc.name)
                     row = Horizontal(classes="svc_row")
                     row.mount(Label("", id=f"icon-{safe_id}", classes="svc_icon"))
-                    row.mount(Label(svc.name, id=f"name-{safe_id}", classes="svc_name"))
+                    row.mount(Label(display_name, id=f"name-{safe_id}", classes="svc_name"))
                     lv.append(ListItem(row, id=safe_id, name=svc.name))
                 yield lv
             yield RichLog(id="log", highlight=False, markup=False, wrap=False)

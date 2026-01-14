@@ -54,12 +54,18 @@ class ServiceRunner(abc.ABC):
     Runtimes can subclass this later (Spring Boot / NextJS / FastAPI).
     """
 
-    def __init__(self, service: DiscoveredService) -> None:
+    def __init__(self, service: DiscoveredService, *, command: str = "dev") -> None:
         self.service = service
+        self._command = command
 
     @property
     def name(self) -> str:
         return self.service.name
+
+    @property
+    def display_name(self) -> str:
+        """Display name for the UI (e.g., 'service#command')."""
+        return f"{self.service.name}#{self._command}"
 
     @property
     def cwd(self) -> Path:

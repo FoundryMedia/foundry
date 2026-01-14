@@ -36,4 +36,55 @@ Use Foundry if you’re building a full-stack web application (frontend + backen
 - Are a solo developer or small team, but expect growth in features, complexity, or contributors.  
 - Prefer sane defaults and structure over reinventing folder layouts, build configs, or module boundaries.  
 - Value developer ergonomics, fast iteration, and scalability over time.
+---
 
+## Installation
+
+### Option 1: Windows Installer (Recommended)
+
+Download the latest installer from [GitHub Releases](https://github.com/FoundryMedia/foundry/releases/latest) and run the setup wizard. This will:
+- Install the Foundry CLI to `%LOCALAPPDATA%\Foundry`
+- Add `foundry` to your PATH automatically
+
+After installation, open a new terminal and verify:
+```bash
+foundry --version
+```
+
+### Option 2: Install from Source (pip)
+
+Requires **Python 3.9+**.
+
+```bash
+# Clone the repository
+git clone https://github.com/FoundryMedia/foundry.git
+cd foundry/cli
+
+# Install in development/editable mode
+pip install -e .
+
+# Or install directly (non-editable)
+pip install .
+```
+
+Verify the installation:
+```bash
+foundry --version
+```
+
+#### Installing from GitHub directly (without cloning)
+
+```bash
+pip install git+https://github.com/FoundryMedia/foundry.git#subdirectory=cli
+```
+
+### Updating
+
+**Installer users**: Download and run the latest installer from [GitHub Releases](https://github.com/FoundryMedia/foundry/releases/latest).
+
+**pip users**: 
+```bash
+cd foundry/cli
+git pull
+pip install -e .
+```

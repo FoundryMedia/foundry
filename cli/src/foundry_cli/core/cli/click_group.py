@@ -158,6 +158,10 @@ class FoundryGroup(click.Group):
 			)
 			raise SystemExit(1)
 
+		except click.exceptions.Abort:
+			# User pressed Ctrl+C - exit quietly
+			raise SystemExit(130)
+
 		except click.exceptions.Exit:
 			raise
 
