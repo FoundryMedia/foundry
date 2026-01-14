@@ -43,15 +43,28 @@ Use Foundry if you’re building a full-stack web application (frontend + backen
 ### Option 1: Windows Installer (Recommended)
 
 Download the latest installer from [GitHub Releases](https://github.com/FoundryMedia/foundry/releases/latest) and run the setup wizard. This will:
-- Install the Foundry CLI to `%LOCALAPPDATA%\Foundry`
-- Add `foundry` to your PATH automatically
+- Install the Foundry CLI to `Program Files\Foundry CLI`
+- Add `foundry` to your system PATH automatically
 
-After installation, open a new terminal and verify:
+After installation, open a **new** terminal and verify:
 ```bash
 foundry --version
 ```
 
-### Option 2: Install from Source (pip)
+### Option 2: Manual Install (Portable)
+
+1. Download `foundrycli-{version}-windows-amd64.zip` from [GitHub Releases](https://github.com/FoundryMedia/foundry/releases/latest)
+2. Extract to your preferred location (e.g., `C:\Tools\Foundry`)
+3. Add that location to your system PATH
+
+Verify the installation:
+```bash
+foundry --version
+```
+
+### Option 3: Install from Source (Development)
+
+> **Note:** Only recommended if you're contributing to Foundry development.
 
 Requires **Python 3.9+**.
 
@@ -62,9 +75,6 @@ cd foundry/cli
 
 # Install in development/editable mode
 pip install -e .
-
-# Or install directly (non-editable)
-pip install .
 ```
 
 Verify the installation:
@@ -72,17 +82,13 @@ Verify the installation:
 foundry --version
 ```
 
-#### Installing from GitHub directly (without cloning)
-
-```bash
-pip install git+https://github.com/FoundryMedia/foundry.git#subdirectory=cli
-```
-
 ### Updating
 
-**Installer users**: Download and run the latest installer from [GitHub Releases](https://github.com/FoundryMedia/foundry/releases/latest).
+The Foundry CLI will notify you when updates are available.
 
-**pip users**: 
+**Installer/Manual users**: Download the latest release from [GitHub Releases](https://github.com/FoundryMedia/foundry/releases/latest).
+
+**Source users**: 
 ```bash
 cd foundry/cli
 git pull
