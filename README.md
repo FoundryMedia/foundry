@@ -1,4 +1,4 @@
-# [Foundry](https://foundry-dev.com) · [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#) [![npm version](https://img.shields.io/npm/v/foundry.svg)](#) [![PRs](https://img.shields.io/badge/PRs-encouraged-purple.svg)](#)
+# [Foundry](https://foundry-dev.com) · [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![npm version](https://img.shields.io/npm/v/foundry.svg)](#) [![PRs](https://img.shields.io/badge/PRs-encouraged-purple.svg)](#)
 
 ---
 
@@ -94,3 +94,7 @@ cd foundry/cli
 git pull
 pip install -e .
 ```
+
+## Contributions
+Foundry is in its earliest stages of development. It's nothing more than a DevX CLI. Little to no developers are finding it to see its value. If we receive enough feedback, we'll formalize a process.
+For now, anyone wanting to fix issues or add features should reach out on [discord](https://discord.gg/k7aEcGUCUM) to discuss changes.
