@@ -12,9 +12,10 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
-from textual.widgets import Footer, Label, ListItem, ListView, RichLog
+from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
 from rich.ansi import AnsiDecoder
 from rich.text import Text
+import webbrowser
 
 from foundry_cli.core.project.workspace import DiscoveredService
 from foundry_cli.core.services.runners.base import (
@@ -25,8 +26,24 @@ from foundry_cli.core.services.runners.base import (
 )
 
 from foundry_cli.core.util.logger import LogLine, format_log_line
+
 from foundry_cli.release.versioning import get_local_version
 from foundry_cli.release.update_check import check_for_updates
+
+def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
+    log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
+    line = (
+        Text.from_markup("[#D670D6 bold]Update available: [/]" +
+            f"[#F14C4C bold]{local}[/][#F5F536 bold] → [/][#23D18B bold]{latest}[/]")
+    )
+    log_list.append(line)
+    if url:
+        log_list.append(Text.from_markup(f"[#29B8DB]Download: {url}[/]"))
+    else:
+        log_list.append(Text.from_markup("[#29B8DB]Run the latest installer from GitHub Releases to upgrade.[/]"))
+    log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
+from foundry_cli.release.update_check import check_for_updates
+
 
 
 @dataclass(frozen=True)
@@ -127,6 +144,12 @@ class ServicesUI(App[None]):
 
     #update_banner_link {
         height: 1;
+        color: #3B8EEA;
+        text-style: bold underline;
+    }
+
+    #update_banner_link:hover {
+        color: #5BA8FF;
     }
 
     #sidebar_title {
@@ -248,11 +271,6 @@ class ServicesUI(App[None]):
         self._focus: str = "list"
         self._is_vscode = os.environ.get("TERM_PROGRAM") == "vscode"
 
-        # Check for updates
-        try:
-            self._local_version, self._latest_version, self._update_url = check_for_updates()
-        except Exception:
-            self._local_version, self._latest_version, self._update_url = None, None, None
 
         if self._is_vscode:
             self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
@@ -264,30 +282,19 @@ class ServicesUI(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="sidebar"):
-                if self._latest_version and self._local_version:
-                    with Vertical(id="update_banner"):
-                        update_line1 = Text()
-                        update_line1.append("Update available: ", style="bold magenta")
-                        update_line1.append(self._local_version, style="bold red")
-                        update_line1.append(" → ", style="bold yellow")
-                        update_line1.append(self._latest_version, style="bold green")
-                        yield Label(update_line1, id="update_banner_line1")
-                        
-                        download_url = self._update_url or "https://github.com/FoundryMedia/foundry/releases/latest"
-                        link_text = Text()
-                        link_text.append("Click to download", style="bold underline blue link " + download_url)
-                        yield Label(link_text, id="update_banner_link")
                 yield Label("Services", id="sidebar_title")
                 yield Label("↑/↓ Select • → to Interact", id="sidebar_hint")
-                lv = ListView(id="services")
+                items = []
                 for svc in self._services:
                     safe_id = f"svc-{svc.name}".replace(" ", "-")
                     display_name = self._display_names.get(svc.name, svc.name)
-                    row = Horizontal(classes="svc_row")
-                    row.mount(Label("", id=f"icon-{safe_id}", classes="svc_icon"))
-                    row.mount(Label(display_name, id=f"name-{safe_id}", classes="svc_name"))
-                    lv.append(ListItem(row, id=safe_id, name=svc.name))
-                yield lv
+                    row = Horizontal(
+                        Label("", id=f"icon-{safe_id}", classes="svc_icon"),
+                        Label(display_name, id=f"name-{safe_id}", classes="svc_name"),
+                        classes="svc_row"
+                    )
+                    items.append(ListItem(row, id=safe_id, name=svc.name))
+                yield ListView(*items, id="services")
             yield RichLog(id="log", highlight=False, markup=False, wrap=False)
         yield ServicesFooter()
 
@@ -315,8 +322,21 @@ class ServicesUI(App[None]):
             icon_lbl.update("?")
             icon_lbl.styles.color = "#888888"
 
+    def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
+        log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
+        line = (
+            Text.from_markup("[magenta bold]Update available: [/]" +
+                f"[red bold]{local}[/][yellow bold] → [/][green bold]{latest}[/]")
+        )
+        log_list.append(line)
+        if url:
+            log_list.append(Text.from_markup(f"[cyan]Download: {url}[/]"))
+        else:
+            log_list.append(Text.from_markup("[cyan]Run the latest installer from GitHub Releases to upgrade.[/]"))
+        log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
+
     def _write_banner_to_service(self, service_name: str) -> None:
-        """Write the Foundry ASCII banner to a service's log buffer."""
+        """Write the Foundry ASCII banner and update banner to a service's log buffer."""
         try:
             version = get_local_version()
         except Exception:
@@ -334,9 +354,15 @@ class ServicesUI(App[None]):
             "",
         ]
 
+        log_list = self._logs.setdefault(service_name, [])
         for line in banner_lines:
             styled = Text.from_markup(line)
-            self._logs.setdefault(service_name, []).append(styled)
+            log_list.append(styled)
+
+        # Check for updates and print update banner if needed
+        local, latest, url = check_for_updates()
+        if latest:
+            _print_update_banner_to_log(log_list, local, latest, url)
 
     async def on_mount(self) -> None:
         if self._is_vscode:
@@ -553,6 +579,11 @@ class ServicesUI(App[None]):
             self.query_one("#sidebar_hint", Label).update("↑/↓ Select • → to Interact")
         except NoMatches:
             pass
+
+    def action_open_download(self) -> None:
+        """Open the download URL in the default browser."""
+        if hasattr(self, "_download_url") and self._download_url:
+            webbrowser.open(self._download_url)
 
     def action_toggle_fullscreen(self) -> None:
         sidebar = self.query_one("#sidebar", Vertical)
