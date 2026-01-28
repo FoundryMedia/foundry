@@ -9,6 +9,29 @@ from foundry_cli.core.errors import FoundryError
 
 
 @dataclass(frozen=True)
+class SshTunnelConfig:
+    """SSH tunnel configuration for a service."""
+
+    local_port: int
+    remote_host: str
+    remote_port: int
+    host: str
+    user: str = "ec2-user"
+    password: str | None = None  # Path to SSH private key file
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SshTunnelConfig":
+        return cls(
+            local_port=data["localPort"],
+            remote_host=data["remoteHost"],
+            remote_port=data["remotePort"],
+            host=data["host"],
+            user=data.get("user", "ec2-user"),
+            password=data.get("password"),
+        )
+
+
+@dataclass(frozen=True)
 class ServiceConfig:
     """Launch configuration for a single service."""
 
@@ -17,15 +40,21 @@ class ServiceConfig:
     actuator_port: int | None = None
     args: tuple[str, ...] = field(default_factory=tuple)
     env: dict[str, str] = field(default_factory=dict)
+    ssh_tunnel: SshTunnelConfig | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ServiceConfig":
+        ssh_tunnel = None
+        if "sshTunnel" in data and data["sshTunnel"]:
+            ssh_tunnel = SshTunnelConfig.from_dict(data["sshTunnel"])
+        
         return cls(
             enabled=data.get("enabled", True),
             port=data.get("port"),
             actuator_port=data.get("actuatorPort"),
             args=tuple(data.get("args", [])),
             env=dict(data.get("env", {})),
+            ssh_tunnel=ssh_tunnel,
         )
 
 

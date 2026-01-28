@@ -6,10 +6,12 @@ from foundry_cli.core.services.runners.base import (
     ServiceStatus,
     ServiceStatusEvent,
 )
+from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
 
 __all__ = [
     "ServiceLogEvent",
     "ServiceRunner",
     "ServiceStatus",
     "ServiceStatusEvent",
+    "TunnelAwareRunner",
 ]
