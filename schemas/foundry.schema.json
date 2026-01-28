@@ -112,6 +112,47 @@
           "additionalProperties": {
             "type": "string"
           }
+        },
+        "sshTunnel": {
+          "description": "SSH tunnel configuration to establish before starting the service (e.g., for database access through an SSH jump host).",
+          "$ref": "#/definitions/sshTunnelConfig"
+        }
+      },
+      "additionalProperties": false
+    },
+    "sshTunnelConfig": {
+      "type": "object",
+      "description": "Configuration for an SSH tunnel through a jump host.",
+      "required": ["localPort", "remoteHost", "remotePort", "host"],
+      "properties": {
+        "localPort": {
+          "description": "Local port to bind for the tunnel (e.g., 3306 for MySQL).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "remoteHost": {
+          "description": "Remote host to tunnel to (e.g., database hostname like 'mydb.abc123.us-east-2.rds.amazonaws.com').",
+          "type": "string"
+        },
+        "remotePort": {
+          "description": "Remote port to tunnel to (e.g., 3306 for MySQL, 5432 for PostgreSQL).",
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        },
+        "host": {
+          "description": "SSH host to connect through (IP or hostname).",
+          "type": "string"
+        },
+        "user": {
+          "description": "SSH user for the host. Defaults to 'ec2-user'.",
+          "type": "string",
+          "default": "ec2-user"
+        },
+        "password": {
+          "description": "Path to SSH private key file. Can be absolute or relative to the foundry.json manifest.",
+          "type": "string"
         }
       },
       "additionalProperties": false
