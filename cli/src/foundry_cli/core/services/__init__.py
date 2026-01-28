@@ -3,4 +3,4 @@
 This package is intentionally separate from UI code.
 """
 
-__all__ = ["factory", "health", "runners"]
+__all__ = ["factory", "health", "runners", "ssh_tunnel"]
