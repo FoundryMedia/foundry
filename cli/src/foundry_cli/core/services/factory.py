@@ -6,6 +6,7 @@ from foundry_cli.core.services.runners.base import ServiceRunner
 from foundry_cli.core.services.runners.java.spring_boot.maven import SpringBootServiceRunner
 from foundry_cli.core.services.runners.node.nextjs import NodeServiceRunner
 from foundry_cli.core.services.runners.python.uvicorn import UvicornServiceRunner
+from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
 
 
 class _UnsupportedServiceRunner(ServiceRunner):
@@ -25,10 +26,12 @@ class _UnsupportedServiceRunner(ServiceRunner):
 def create_runner(service: DiscoveredService, *, debug: bool = False, command: str = "dev"):
     rt = service.runtime.runtime
     cfg = service.config
+    
+    runner: ServiceRunner
 
     # Maven / Spring Boot
     if rt == ServiceRuntime.spring_boot:
-        return SpringBootServiceRunner(
+        runner = SpringBootServiceRunner(
             service,
             debug=debug,
             port=cfg.port or 8080,
@@ -40,8 +43,8 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
         )
 
     # Next.js
-    if rt == ServiceRuntime.nextjs:
-        return NodeServiceRunner(
+    elif rt == ServiceRuntime.nextjs:
+        runner = NodeServiceRunner(
             service,
             debug=debug,
             port=cfg.port,
@@ -51,8 +54,8 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
         )
 
     # FastAPI
-    if rt == ServiceRuntime.fastapi:
-        return UvicornServiceRunner(
+    elif rt == ServiceRuntime.fastapi:
+        runner = UvicornServiceRunner(
             service,
             debug=debug,
             port=cfg.port,
@@ -62,4 +65,22 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
         )
 
     # Fallback
-    return _UnsupportedServiceRunner(service, command=command)
+    else:
+        runner = _UnsupportedServiceRunner(service, command=command)
+    
+    # Wrap with tunnel support if configured
+    if cfg.ssh_tunnel is not None:
+        # Get workspace root from service path (go up to find foundry.json)
+        workspace_root = service.path
+        while workspace_root.parent != workspace_root:
+            if (workspace_root / "foundry.json").exists():
+                break
+            workspace_root = workspace_root.parent
+        
+        runner = TunnelAwareRunner(
+            inner_runner=runner,
+            tunnel_config=cfg.ssh_tunnel,
+            workspace_root=workspace_root if (workspace_root / "foundry.json").exists() else None,
+        )
+    
+    return runner

@@ -7,6 +7,7 @@ dist/
 lib/
 package/
 build/
+logs/
 
 # Logs
 npm-debug.log*
