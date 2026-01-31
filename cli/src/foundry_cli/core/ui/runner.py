@@ -295,7 +295,7 @@ class ServicesUI(App[None]):
                     )
                     items.append(ListItem(row, id=safe_id, name=svc.name))
                 yield ListView(*items, id="services")
-            yield RichLog(id="log", highlight=False, markup=False, wrap=False)
+            yield RichLog(id="log", highlight=False, markup=False, wrap=True)
         yield ServicesFooter()
 
 
@@ -598,6 +598,9 @@ class ServicesUI(App[None]):
             self.action_interact()
             sidebar.add_class("fullscreen")
             log.add_class("fullscreen")
+
+        # Re-render logs after layout updates so wrapping uses new width
+        self.call_after_refresh(self._render_selected)
 
     def action_log_line_up(self) -> None:
         log = self.query_one("#log", RichLog)
