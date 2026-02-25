@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -28,6 +29,22 @@ from foundry_cli.core.services.runners.base import (
 from foundry_cli.core.util.logger import LogLine, format_log_line
 
 from foundry_cli.release.versioning import get_local_version
+
+
+def _sanitize_id(name: str) -> str:
+    """Sanitize a name to be a valid Textual widget ID.
+    
+    IDs can only contain letters, numbers, underscores, and hyphens,
+    and must not start with a number.
+    """
+    # Replace common separators with hyphens
+    result = name.replace(" ", "-").replace("/", "-").replace(".", "-")
+    # Remove any remaining invalid characters
+    result = re.sub(r"[^a-zA-Z0-9_-]", "", result)
+    # Ensure it doesn't start with a number
+    if result and result[0].isdigit():
+        result = f"s-{result}"
+    return result or "unknown"
 from foundry_cli.release.update_check import check_for_updates
 
 def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
@@ -174,17 +191,20 @@ class ServicesUI(App[None]):
     .svc_row {
         layout: horizontal;
         height: 1;
-        padding: 0 1;
+        padding: 0 1 0 2;
     }
 
     .svc_icon {
-        width: 3;
+        width: 4;
+        min-width: 4;
+        margin-right: 1;
         content-align: left middle;
     }
 
     /* Wider icon column for ASCII status indicators in non-VSCode terminals */
     .svc_icon.ascii-mode {
         width: 5;
+        min-width: 5;
     }
 
     .svc_name {
@@ -229,6 +249,9 @@ class ServicesUI(App[None]):
 
         # Layout
         Binding("tab", "toggle_fullscreen", "Toggle Sidebar", priority=True),
+
+        # Service control
+        Binding("r", "restart", "Restart"),
 
         # Log scrolling (when log is focused)
         Binding("u", "log_line_up", "Scroll Up"),
@@ -286,7 +309,7 @@ class ServicesUI(App[None]):
                 yield Label("↑/↓ Select • → to Interact", id="sidebar_hint")
                 items = []
                 for svc in self._services:
-                    safe_id = f"svc-{svc.name}".replace(" ", "-")
+                    safe_id = f"svc-{_sanitize_id(svc.name)}"
                     display_name = self._display_names.get(svc.name, svc.name)
                     row = Horizontal(
                         Label("", id=f"icon-{safe_id}", classes="svc_icon"),
@@ -300,7 +323,7 @@ class ServicesUI(App[None]):
 
 
     def _update_service_label(self, service_name: str) -> None:
-        safe_id = f"svc-{service_name}".replace(" ", "-")
+        safe_id = f"svc-{_sanitize_id(service_name)}"
         try:
             icon_lbl = self.query_one(f"#icon-{safe_id}", Label)
         except Exception:
@@ -369,7 +392,7 @@ class ServicesUI(App[None]):
             self.query_one("#log", RichLog).add_class("vscode-terminal")
         else:
             for svc in self._services:
-                safe_id = f"svc-{svc.name}".replace(" ", "-")
+                safe_id = f"svc-{_sanitize_id(svc.name)}"
                 try:
                     self.query_one(f"#icon-{safe_id}", Label).add_class("ascii-mode")
                 except Exception:
@@ -631,6 +654,69 @@ class ServicesUI(App[None]):
 
     def action_log_bottom(self) -> None:
         self.query_one("#log", RichLog).scroll_end(animate=False)
+
+    async def action_restart(self) -> None:
+        """Restart the currently selected service."""
+        if not self._selected:
+            return
+        
+        name = self._selected
+        state = self._runners.get(name)
+        if not state:
+            return
+        
+        # Log restart message
+        restart_msg = Text.from_markup(
+            f"[bold #F5F536]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/] "
+            "[bold #29B8DB]INFO[/] Restarting service..."
+        )
+        self._logs[name].append(restart_msg)
+        self._logs[name].append(Text(""))
+        
+        # Update status to restarting (shows spinner)
+        self._status[name] = ServiceStatus.starting
+        self._update_service_label(name)
+        self._render_selected()
+        
+        # Cancel existing tasks
+        state.pump_task.cancel()
+        state.status_task.cancel()
+        state.start_task.cancel()
+        
+        await asyncio.gather(
+            state.pump_task,
+            state.status_task,
+            state.start_task,
+            return_exceptions=True,
+        )
+        
+        # Stop the runner
+        try:
+            await state.runner.stop()
+        except Exception as e:
+            error_msg = Text.from_markup(
+                f"[bold #F5F536]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/] "
+                f"[bold #F14C4C]ERROR[/] Failed to stop: {e}"
+            )
+            self._logs[name].append(error_msg)
+        
+        # Small delay for process cleanup
+        await asyncio.sleep(0.5)
+        
+        # Restart the runner
+        start_task = asyncio.create_task(state.runner.start())
+        pump_task = asyncio.create_task(self._pump_runner_events(state.runner))
+        status_task = asyncio.create_task(self._pump_runner_status_events(state.runner))
+        
+        self._runners[name] = ServiceRunnerState(
+            name=name,
+            runner=state.runner,
+            start_task=start_task,
+            pump_task=pump_task,
+            status_task=status_task,
+        )
+        
+        self._render_selected()
 
     async def action_request_quit(self) -> None:
         """Gracefully shut down all services."""

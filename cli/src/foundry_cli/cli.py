@@ -29,10 +29,18 @@ from foundry_cli.release.versioning import get_local_version, VersionResolutionE
 
 from foundry_cli.commands.run import run
 from foundry_cli.commands.alias import alias
+from foundry_cli.commands.init import init
+from foundry_cli.commands.generate import generate
+from foundry_cli.commands.config_cmd import config
+from foundry_cli.commands.sync import sync
 
 def register_commands(root: click.Group) -> None:
     root.add_command(run)
     root.add_command(alias)
+    root.add_command(init)
+    root.add_command(generate)
+    root.add_command(config)
+    root.add_command(sync)
 
 
 def print_header(local: str) -> None:

@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+from pathlib import Path
+
 from foundry_cli.core.project.service_runtime import ServiceRuntime
-from foundry_cli.core.project.workspace import DiscoveredService
+from foundry_cli.core.project.workspace import DiscoveredService, DiscoveredSidecar
 from foundry_cli.core.services.runners.base import ServiceRunner
 from foundry_cli.core.services.runners.java.spring_boot.maven import SpringBootServiceRunner
 from foundry_cli.core.services.runners.node.nextjs import NodeServiceRunner
 from foundry_cli.core.services.runners.python.uvicorn import UvicornServiceRunner
+from foundry_cli.core.services.runners.sidecar import SidecarRunner
 from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
 
 
@@ -29,6 +32,14 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
     
     runner: ServiceRunner
 
+    strict_health_ports = False
+    if cfg.strict_mode_enabled is True:
+        # Strict mode enables strict checks by default unless explicitly disabled.
+        strict_health_ports = cfg.strict_health_ports is not False
+    elif cfg.strict_health_ports is True:
+        # Explicit opt-in even when strict mode is off.
+        strict_health_ports = True
+
     # Maven / Spring Boot
     if rt == ServiceRuntime.spring_boot:
         runner = SpringBootServiceRunner(
@@ -40,6 +51,7 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
             command=command,
             args=cfg.args,
             env=cfg.env,
+            strict_health_ports=strict_health_ports,
         )
 
     # Next.js
@@ -53,8 +65,8 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
             env=cfg.env,
         )
 
-    # FastAPI
-    elif rt == ServiceRuntime.fastapi:
+    # Uvicorn (FastAPI, Starlette, etc.)
+    elif rt == ServiceRuntime.uvicorn:
         runner = UvicornServiceRunner(
             service,
             debug=debug,
@@ -84,3 +96,51 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
         )
     
     return runner
+
+
+def create_sidecar_runner(
+    sidecar: DiscoveredSidecar,
+    workspace_root: Path,
+    *,
+    debug: bool = False,
+    sidecar_id: str | None = None,
+    display_name: str | None = None,
+) -> ServiceRunner:
+    """Create a runner for a sidecar service.
+    
+    Sidecars are tied to their parent service and start alongside them.
+    They use the SidecarRunner which handles generic commands.
+    
+    Args:
+        sidecar: The discovered sidecar configuration
+        workspace_root: Root directory of the workspace
+        debug: Enable debug output
+        sidecar_id: The unique ID for this sidecar (e.g., "parent/name") - used for lookups
+        display_name: Optional display name (e.g., with indent for UI hierarchy)
+    """
+    from foundry_cli.core.project.manifest import ServiceConfig
+    from foundry_cli.core.project.service_runtime import RuntimeMatch, ServiceRuntime
+    
+    # Build the sidecar ID if not provided
+    if sidecar_id is None:
+        sidecar_id = f"{sidecar.parent_service}/{sidecar.name}"
+    
+    # Create a pseudo DiscoveredService for the sidecar
+    # (so it integrates with the existing UI and runner infrastructure)
+    # IMPORTANT: name must match the key used in the runners dict for log routing
+    pseudo_service = DiscoveredService(
+        name=sidecar_id,  # Must match the runners dict key for lookups
+        path=workspace_root,  # Sidecars run from workspace root by default
+        runtime=RuntimeMatch(ServiceRuntime.unknown, f"sidecar: {sidecar.config.command}"),
+        kind="sidecar",  # type: ignore
+        config=ServiceConfig(),  # Sidecars have their own config
+    )
+    
+    return SidecarRunner(
+        pseudo_service,
+        sidecar.config,
+        workspace_root,
+        debug=debug,
+        sidecar_name=sidecar.name,
+        display_name=display_name,
+    )

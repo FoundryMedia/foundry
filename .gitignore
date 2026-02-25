@@ -5,9 +5,11 @@ node_modules/
 bin/
 dist/
 lib/
+out/
 package/
 build/
 logs/
+.next/
 
 # Logs
 npm-debug.log*

@@ -1,0 +1,122 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --bg-primary: #0f1d3d;
+  --bg-secondary: #111827;
+  --bg-card: #1e293b;
+  --text-primary: #f1f5f9;
+  --text-secondary: #94a3b8;
+  --accent: #3b82f6;
+  --accent-hover: #60a5fa;
+  --border: #334155;
+}
+
+@layer base {
+  body {
+    @apply bg-gray-950 text-slate-100 antialiased;
+  }
+
+  h1 {
+    @apply text-3xl font-bold tracking-tight text-white;
+  }
+
+  h2 {
+    @apply text-2xl font-semibold tracking-tight text-white;
+  }
+
+  h3 {
+    @apply text-xl font-semibold text-slate-200;
+  }
+
+  a {
+    @apply text-foundry-400 hover:text-foundry-300 transition-colors;
+  }
+
+  code {
+    @apply bg-slate-800 text-foundry-300 px-1.5 py-0.5 rounded text-sm font-mono;
+  }
+
+  pre {
+    @apply bg-slate-900 border border-slate-700 rounded-lg p-4 overflow-x-auto;
+  }
+
+  pre code {
+    @apply bg-transparent p-0 text-slate-300;
+  }
+}
+
+@layer components {
+  .card {
+    @apply bg-slate-900/50 border border-slate-700/50 rounded-xl p-6
+           hover:border-foundry-500/30 transition-all duration-200;
+  }
+
+  .badge {
+    @apply inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium;
+  }
+
+  .badge-blue {
+    @apply badge bg-foundry-500/10 text-foundry-400 border border-foundry-500/20;
+  }
+
+  .badge-green {
+    @apply badge bg-emerald-500/10 text-emerald-400 border border-emerald-500/20;
+  }
+
+  .badge-yellow {
+    @apply badge bg-amber-500/10 text-amber-400 border border-amber-500/20;
+  }
+
+  .sidebar-link {
+    @apply block px-3 py-1.5 text-sm text-slate-400 rounded-md
+           hover:text-white hover:bg-slate-800/50 transition-colors;
+  }
+
+  .sidebar-link-active {
+    @apply sidebar-link text-foundry-400 bg-foundry-500/10 font-medium;
+  }
+
+  /* Markdown content rendered from docs */
+  .prose-wiki h1 {
+    @apply text-3xl font-bold text-white mb-6 pb-3 border-b border-slate-700;
+  }
+
+  .prose-wiki h2 {
+    @apply text-2xl font-semibold text-white mt-10 mb-4;
+  }
+
+  .prose-wiki h3 {
+    @apply text-xl font-semibold text-slate-200 mt-8 mb-3;
+  }
+
+  .prose-wiki p {
+    @apply text-slate-300 leading-relaxed mb-4;
+  }
+
+  .prose-wiki ul {
+    @apply list-disc list-inside space-y-1 text-slate-300 mb-4 ml-2;
+  }
+
+  .prose-wiki ol {
+    @apply list-decimal list-inside space-y-1 text-slate-300 mb-4 ml-2;
+  }
+
+  .prose-wiki table {
+    @apply w-full border-collapse mb-6;
+  }
+
+  .prose-wiki th {
+    @apply text-left px-4 py-2 bg-slate-800 text-slate-200 font-medium
+           border border-slate-700 text-sm;
+  }
+
+  .prose-wiki td {
+    @apply px-4 py-2 text-slate-300 border border-slate-700/50 text-sm;
+  }
+
+  .prose-wiki blockquote {
+    @apply border-l-4 border-foundry-500 pl-4 italic text-slate-400 my-4;
+  }
+}
