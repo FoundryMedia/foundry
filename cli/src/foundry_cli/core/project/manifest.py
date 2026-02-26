@@ -426,12 +426,23 @@ class ServiceConfig:
                 if isinstance(sidecar_data, dict):
                     sidecars[name] = SidecarConfig.from_dict(sidecar_data)
         # Also merge from deploy block if present (v0.3.0 compat)
+        # Deploy sidecars are Docker images; synthesize a `docker run` command
+        # so the local sidecar runner can start them.
         if deploy and deploy.sidecars and not sidecars:
             for name, sc in deploy.sidecars.items():
+                docker_args = ["run", "--rm"]
+                if sc.port:
+                    docker_args.extend(["-p", f"{sc.port}:{sc.port}"])
+                for env_key, env_val in (sc.environment or {}).items():
+                    docker_args.extend(["-e", f"{env_key}={env_val}"])
+                docker_args.append(sc.image)
+                if sc.command:
+                    docker_args.extend(sc.command)
                 sidecars[name] = SidecarConfig(
-                    command=" ".join(sc.command) if sc.command else sc.image,
+                    command="docker",
+                    args=tuple(docker_args),
                     port=sc.port,
-                    env=sc.environment,
+                    env=sc.environment or {},
                 )
 
         # ── Run block ────────────────────────────────────────────────
