@@ -195,16 +195,10 @@ class ServicesUI(App[None]):
     }
 
     .svc_icon {
-        width: 4;
-        min-width: 4;
-        margin-right: 1;
-        content-align: left middle;
-    }
-
-    /* Wider icon column for ASCII status indicators in non-VSCode terminals */
-    .svc_icon.ascii-mode {
         width: 5;
         min-width: 5;
+        margin-right: 1;
+        content-align: left middle;
     }
 
     .svc_name {
@@ -296,7 +290,7 @@ class ServicesUI(App[None]):
 
 
         if self._is_vscode:
-            self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+            self._spinner_frames: tuple[str, ...] = (" ⠋", " ⠙", " ⠹", " ⠸", " ⠼", " ⠴", " ⠦", " ⠧", " ⠇", " ⠏")
         else:
             self._spinner_frames: tuple[str, ...] = (" -", " \\", " |", " /")
         self._spinner_index: int = 0
@@ -336,10 +330,10 @@ class ServicesUI(App[None]):
             icon_lbl.update(frame)
             icon_lbl.styles.color = "#F5F536" if is_selected else "#3B8EEA"
         elif st == ServiceStatus.healthy:
-            icon_lbl.update("✔" if self._is_vscode else "[OK]")
+            icon_lbl.update(" ✔︎" if self._is_vscode else "[OK]")
             icon_lbl.styles.color = "#23D18B"
         elif st == ServiceStatus.failed:
-            icon_lbl.update("✘" if self._is_vscode else "[X]")
+            icon_lbl.update(" ✘︎" if self._is_vscode else "[X]")
             icon_lbl.styles.color = "#F14C4C"
         else:
             icon_lbl.update("?")
@@ -390,13 +384,6 @@ class ServicesUI(App[None]):
     async def on_mount(self) -> None:
         if self._is_vscode:
             self.query_one("#log", RichLog).add_class("vscode-terminal")
-        else:
-            for svc in self._services:
-                safe_id = f"svc-{_sanitize_id(svc.name)}"
-                try:
-                    self.query_one(f"#icon-{safe_id}", Label).add_class("ascii-mode")
-                except Exception:
-                    pass
 
         for svc in self._services:
             self._write_banner_to_service(svc.name)
