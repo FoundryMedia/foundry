@@ -28,7 +28,7 @@ def run(ctx: click.Context, debug: bool) -> None:
 run.help_tip = "VSCode users, in Settings set terminal.integrated.stickyScroll.enabled to false"
 
 
-def _run_services_ui(command: str, *, filter_svc: str | None = None) -> None:
+def _run_services_ui(command: str, *, filter_svc: str | None = None, migrate_db: bool = False) -> None:
     """Common logic for running services with the UI."""
     import click
     ctx = click.get_current_context()
@@ -101,7 +101,7 @@ def _run_services_ui(command: str, *, filter_svc: str | None = None) -> None:
             sidecar, workspace.root, debug=debug, sidecar_id=sidecar_id, display_name=display_name
         )
     for svc in services:
-        runners[svc.name] = create_runner(svc, debug=debug, command=command)
+        runners[svc.name] = create_runner(svc, debug=debug, command=command, migrate_db=migrate_db)
 
     app = ServicesUI(all_services, runners, debug=debug)
     
@@ -125,10 +125,11 @@ def _run_services_ui(command: str, *, filter_svc: str | None = None) -> None:
 
 @run.command(add_help_option=False)
 @click.option("--filter", "filter_svc", default=None, help="Comma-separated list of services to run (dependencies are included automatically).")
+@click.option("--migrate-db", "-mdb", is_flag=True, default=False, help="Run Liquibase database migrations before starting services that have a database block.")
 @click.pass_context
-def dev(ctx: click.Context, filter_svc: str | None) -> None:
+def dev(ctx: click.Context, filter_svc: str | None, migrate_db: bool) -> None:
     """Run the platform in development mode with the Services UI."""
-    _run_services_ui("dev", filter_svc=filter_svc)
+    _run_services_ui("dev", filter_svc=filter_svc, migrate_db=migrate_db)
 
 
 @run.command(add_help_option=False)

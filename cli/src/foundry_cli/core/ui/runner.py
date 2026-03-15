@@ -13,6 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual import events
 from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
 from rich.ansi import AnsiDecoder
 from rich.text import Text
@@ -25,6 +26,7 @@ from foundry_cli.core.services.runners.base import (
     ServiceStatus,
     ServiceStatusEvent,
 )
+from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
 
 from foundry_cli.core.util.logger import LogLine, format_log_line
 
@@ -288,6 +290,21 @@ class ServicesUI(App[None]):
         self._focus: str = "list"
         self._is_vscode = os.environ.get("TERM_PROGRAM") == "vscode"
 
+        # Tunnel readiness events — sidecars wait for their parent's tunnel
+        # before starting. The event is set when the parent emits a status
+        # with "tunnel established" in the detail, or immediately if the
+        # parent has no tunnel (no SSH config).
+        self._tunnel_ready: Dict[str, asyncio.Event] = {}
+        for svc in services:
+            if "/" not in svc.name:
+                # Top-level service — create an event for it
+                parent_runner = runners.get(svc.name)
+                evt = asyncio.Event()
+                # If this service has no tunnel wrapper, it's ready immediately
+                if parent_runner is None or not isinstance(parent_runner, TunnelAwareRunner):
+                    evt.set()
+                self._tunnel_ready[svc.name] = evt
+
 
         if self._is_vscode:
             self._spinner_frames: tuple[str, ...] = (" ⠋", " ⠙", " ⠹", " ⠸", " ⠼", " ⠴", " ⠦", " ⠧", " ⠇", " ⠏")
@@ -393,7 +410,16 @@ class ServicesUI(App[None]):
             if runner is None:
                 continue
 
-            start_task = asyncio.create_task(runner.start())
+            # Sidecars (name = "parent/sidecar") must wait for their
+            # parent service's SSH tunnel before starting.
+            if "/" in svc.name:
+                parent_name = svc.name.split("/", 1)[0]
+                start_task = asyncio.create_task(
+                    self._start_after_tunnel(parent_name, runner)
+                )
+            else:
+                start_task = asyncio.create_task(runner.start())
+
             pump_task = asyncio.create_task(self._pump_runner_events(runner))
             status_task = asyncio.create_task(self._pump_runner_status_events(runner))
             self._runners[svc.name] = ServiceRunnerState(
@@ -456,6 +482,13 @@ class ServicesUI(App[None]):
                 self._apply_status_event(ev)
         except asyncio.CancelledError:
             return
+
+    async def _start_after_tunnel(self, parent_name: str, runner: ServiceRunner) -> None:
+        """Wait for a parent service's SSH tunnel to be established, then start the runner."""
+        evt = self._tunnel_ready.get(parent_name)
+        if evt and not evt.is_set():
+            await evt.wait()
+        await runner.start()
 
     def _render_selected(self) -> None:
         log = self.query_one("#log", RichLog)
@@ -523,6 +556,12 @@ class ServicesUI(App[None]):
         self._status[ev.service_name] = ev.status
         self._update_service_label(ev.service_name)
 
+        # Signal tunnel readiness for sidecar dependency tracking
+        if ev.service_name in self._tunnel_ready and not self._tunnel_ready[ev.service_name].is_set():
+            detail_lower = (ev.detail or "").lower()
+            if "tunnel established" in detail_lower or ev.status in (ServiceStatus.healthy, ServiceStatus.failed):
+                self._tunnel_ready[ev.service_name].set()
+
         if ev.level == "DEBUG" and not self._debug:
             return
 
@@ -539,6 +578,20 @@ class ServicesUI(App[None]):
                 self.query_one("#log", RichLog).write(styled)
             except NoMatches:
                 return
+
+    async def on_event(self, event: events.Event) -> None:
+        """Drop non-left-click mouse events and paste events before dispatch.
+
+        Right/middle-click in some terminals (e.g. VS Code) can trigger
+        @click meta actions on the footer or paste clipboard text, which
+        would inadvertently fire key-bound actions like restart.
+        """
+        if isinstance(event, (events.MouseDown, events.MouseUp, events.Click)):
+            if event.button != 1:
+                return  # swallow the event entirely
+        if isinstance(event, events.Paste):
+            return  # swallow paste — no paste target in this TUI
+        await super().on_event(event)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
@@ -687,6 +740,17 @@ class ServicesUI(App[None]):
             )
             self._logs[name].append(error_msg)
         
+        # Drain residual log/status events that the old runner may have
+        # enqueued before it was fully stopped, so they don't appear after
+        # the restart message (e.g. a stale "terminated unexpectedly" error).
+        try:
+            while not state.runner._log_queue.empty():
+                state.runner._log_queue.get_nowait()
+            while not state.runner._status_queue.empty():
+                state.runner._status_queue.get_nowait()
+        except Exception:
+            pass
+
         # Small delay for process cleanup
         await asyncio.sleep(0.5)
         

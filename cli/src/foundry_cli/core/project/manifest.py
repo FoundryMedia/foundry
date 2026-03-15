@@ -65,6 +65,27 @@ class SidecarConfig:
 
 
 @dataclass(frozen=True)
+class DebugConfig:
+    """Remote debugger configuration for local development.
+
+    Enables IDE debugger attachment (e.g. JDWP for Java, --inspect for Node).
+    """
+
+    port: int
+    suspend: bool = False
+
+    @classmethod
+    def from_value(cls, value: int | dict[str, Any]) -> "DebugConfig":
+        """Parse from an integer (port only) or a dict with port/suspend."""
+        if isinstance(value, int):
+            return cls(port=value)
+        return cls(
+            port=value["port"],
+            suspend=value.get("suspend", False),
+        )
+
+
+@dataclass(frozen=True)
 class HealthCheckConfig:
     """Health check endpoint configuration for deployment readiness and monitoring."""
 
@@ -151,14 +172,20 @@ class DatabaseConfig:
     changelog: str
     schema: str | None = None
     properties_path: str | None = None
+    credentials_secret_id: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "DatabaseConfig":
+        # Resolve credentials secret ID from nested "credentials" block
+        credentials = data.get("credentials", {})
+        secret_id = credentials.get("secretId") if isinstance(credentials, dict) else None
+
         return cls(
             engine=data["engine"],
             changelog=data["changelog"],
             schema=data.get("schema"),
             properties_path=data.get("properties"),
+            credentials_secret_id=secret_id,
         )
 
 
@@ -334,6 +361,7 @@ class ServiceConfig:
     port: int | None = None
     actuator_port: int | None = None
     health_check: HealthCheckConfig | None = None
+    debug: DebugConfig | None = None
     args: tuple[str, ...] = field(default_factory=tuple)
     env: dict[str, str] = field(default_factory=dict)
     # Run strictness controls (local/workspace overrides or manifest run block)
@@ -481,6 +509,12 @@ class ServiceConfig:
         if isinstance(hc_data, dict):
             health_check = HealthCheckConfig.from_dict(hc_data)
 
+        # Parse debug configuration (from run block)
+        debug = None
+        debug_data = (run if isinstance(run, dict) else data).get("debug")
+        if debug_data is not None:
+            debug = DebugConfig.from_value(debug_data)
+
         return cls(
             scope=scope,
             stack_type=stack_type,
@@ -492,6 +526,7 @@ class ServiceConfig:
             port=port,
             actuator_port=actuator_port,
             health_check=health_check,
+            debug=debug,
             args=args,
             env=env,
             strict_mode_enabled=strict_mode_enabled,

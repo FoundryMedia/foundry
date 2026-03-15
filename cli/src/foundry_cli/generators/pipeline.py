@@ -96,6 +96,12 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("        type: string")
     lines.append("")
 
+    # Concurrency — cancel in-progress runs when a new deploy starts
+    lines.append("concurrency:")
+    lines.append("  group: deploy-${{ github.ref }}")
+    lines.append("  cancel-in-progress: true")
+    lines.append("")
+
     # Permissions
     lines.append("permissions:")
     lines.append("  id-token: write")

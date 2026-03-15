@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 from typing import Literal
 
+from foundry_cli.core.project.manifest import DebugConfig
 from foundry_cli.core.services.health import HealthCheckConfig, wait_for_http_healthy
 from foundry_cli.core.services.runners.base import ServiceStatus, ServiceStatusEvent
 from foundry_cli.core.services.runners.process import ProcessBackedRunner
@@ -52,6 +53,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         command: str = "dev",
         args: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
+        debug_config: DebugConfig | None = None,
     ) -> None:
         super().__init__(service, debug=debug, command=command)
         self._port = port
@@ -60,6 +62,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         self._dep = dependency_manager
         self._args = args
         self._env = env or {}
+        self._debug_config = debug_config
         self._process_monitor_task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -98,6 +101,24 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             return
 
         cmd = [str(mvnw), "-q", "spring-boot:run"]
+
+        # Inject JDWP remote debug agent when debug config is present
+        if self._debug_config is not None:
+            suspend = "y" if self._debug_config.suspend else "n"
+            jdwp_arg = (
+                f"-agentlib:jdwp=transport=dt_socket,server=y,"
+                f"suspend={suspend},address=*:{self._debug_config.port}"
+            )
+            cmd.append(f"-Dspring-boot.run.jvmArguments={jdwp_arg}")
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.starting,
+                    detail=f"Remote debugger listening on port {self._debug_config.port}"
+                           + (" (suspend=y, waiting for debugger)" if self._debug_config.suspend else ""),
+                    level="INFO",
+                )
+            )
+
         if self._args:
             # -D args are Maven system properties (e.g. -Dspring-boot.run.profiles=local)
             # — pass them directly on the command line.

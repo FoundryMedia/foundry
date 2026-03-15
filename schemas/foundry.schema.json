@@ -321,6 +321,17 @@
         "properties": {
           "description": "Relative path to the Liquibase connection properties file.",
           "type": "string"
+        },
+        "credentials": {
+          "description": "Database credential resolution configuration.",
+          "type": "object",
+          "properties": {
+            "secretId": {
+              "description": "AWS Secrets Manager secret ID containing database credentials (JSON with engine, host, port, dbname, username, password).",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
@@ -595,6 +606,36 @@
         "healthCheck": {
           "description": "Health check endpoint path for local development (e.g., '/actuator/health').",
           "type": "string"
+        },
+        "debug": {
+          "description": "Remote debugger configuration for local development. Enables IDE debugger attachment. Can be an integer (port only, suspend=false) or an object with port and suspend options.",
+          "oneOf": [
+            {
+              "type": "integer",
+              "description": "Debug port. The service will start with a remote debugger listening on this port (suspend=false).",
+              "minimum": 1024,
+              "maximum": 65535
+            },
+            {
+              "type": "object",
+              "description": "Debug configuration object.",
+              "required": ["port"],
+              "properties": {
+                "port": {
+                  "description": "Port for the remote debugger to listen on.",
+                  "type": "integer",
+                  "minimum": 1024,
+                  "maximum": 65535
+                },
+                "suspend": {
+                  "description": "Whether the JVM should wait for a debugger to attach before starting. Default: false.",
+                  "type": "boolean",
+                  "default": false
+                }
+              },
+              "additionalProperties": false
+            }
+          ]
         }
       },
       "additionalProperties": false

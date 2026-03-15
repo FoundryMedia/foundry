@@ -182,12 +182,16 @@ class SshTunnelRunner:
             loop = asyncio.get_event_loop()
             
             def create_tunnel():
+                # Bind to 0.0.0.0 so Docker containers can reach the tunnel
+                # via host.docker.internal (which resolves to a non-loopback IP
+                # on Docker Desktop). Binding to 127.0.0.1 would make the
+                # tunnel unreachable from containers.
                 tunnel = SSHTunnelForwarder(
                     (cfg.host, 22),
                     ssh_username=cfg.user,
                     ssh_pkey=str(key_file) if key_file else None,
                     remote_bind_address=(cfg.remote_host, cfg.remote_port),
-                    local_bind_address=("127.0.0.1", cfg.local_port),
+                    local_bind_address=("0.0.0.0", cfg.local_port),
                     set_keepalive=30.0,
                 )
                 tunnel.start()

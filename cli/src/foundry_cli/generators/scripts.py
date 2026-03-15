@@ -111,6 +111,7 @@ class SecretMapping:
     target: str
     format: str = "raw"
     extract_key: str | None = None
+    optional: bool = False
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SecretMapping":
@@ -119,6 +120,7 @@ class SecretMapping:
             target=data["target"],
             format=data.get("format", "raw"),
             extract_key=data.get("extractKey"),
+            optional=data.get("optional", False),
         )
 
 
@@ -445,6 +447,19 @@ class DeploymentProfile:
     def needs_database_migration(self) -> bool:
         return self.database is not None
 
+    @property
+    def iac_key(self) -> str:
+        """IaC-convention key: backends get -service, frontends get -frontend."""
+        if self.kind == "backend":
+            return f"{{self.name}}-service"
+        elif self.kind == "frontend":
+            return f"{{self.name}}-frontend"
+        return self.name
+
+    @property
+    def has_sidecars(self) -> bool:
+        return bool(self.sidecars)
+
 
 STRATEGY_DEFAULTS: dict[tuple[str, str | None], str] = {{
     ("backend", "spring-boot"): "service",
@@ -576,23 +591,27 @@ def _default_secrets(
     secrets: list[SecretMapping] = []
     if type_ == "spring-boot":
         secrets.append(SecretMapping(
-            source="{{prefix}}-{{env}}/microlith-spring-properties",
+            source="{{prefix}}-{{env}}/{{service}}-spring-properties",
             target=f"{{apps_dir}}/backend/{{{{service}}}}/src/main/resources/application-{{{{env}}}}.yml",
+            optional=True,
         ))
         if role == "auth":
             secrets.append(SecretMapping(
                 source="{{prefix}}-{{env}}/efga-spring-properties",
                 target=f"{{apps_dir}}/backend/{{{{service}}}}/src/main/resources/efga-{{{{env}}}}.yml",
+                optional=True,
             ))
     elif type_ in ("uvicorn", "gunicorn", "flask", "django"):
         secrets.append(SecretMapping(
             source="{{prefix}}-{{env}}/{{service}}-env",
             target=f"{{apps_dir}}/backend/{{{{service}}}}/.env",
+            optional=True,
         ))
-    elif kind == "frontend":
+    elif kind == "frontend" and strategy != "static":
         secrets.append(SecretMapping(
             source="{{prefix}}-{{env}}/{{service}}-env",
             target=f"{{apps_dir}}/frontend/{{{{service}}}}/.env.production",
+            optional=True,
         ))
     return tuple(secrets)
 
@@ -673,8 +692,12 @@ def fetch_all_secrets(
             path = fetch_and_write_secret(mapping, secrets_client, prefix, env, service)
             paths.append(path)
         except Exception as e:
-            logger.error(f"❌ Failed to fetch secret {{mapping.source}}: {{e}}")
-            raise
+            if mapping.optional:
+                source = mapping.source.format(prefix=prefix, env=env, service=service)
+                logger.warning(f"⚠️ Optional secret not found: {{source}} — skipping")
+            else:
+                logger.error(f"❌ Failed to fetch secret {{mapping.source}}: {{e}}")
+                raise
     return paths
 
 
@@ -744,9 +767,21 @@ class EcsEngine:
             self.prefix, self.env, self.profile.name,
         )
 
-        # 2. Get ECR repo
+        # Ensure target files exist for optional secrets that were skipped.
+        # Dockerfiles may COPY these files unconditionally.
+        for mapping in self.profile.secrets:
+            if mapping.optional:
+                target = Path(mapping.target.format(
+                    prefix=self.prefix, env=self.env, service=self.profile.name,
+                ))
+                if not target.exists():
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    target.touch()
+                    logger.info(f"Created empty fallback: {{target}}")
+
+        # 2. Get ECR repo (IaC names: backends get -service, frontends get -frontend)
         ecr_client = self.session.client("ecr")
-        repo_name = f"{{self.prefix}}-{{self.env}}-{{self.profile.name}}"
+        repo_name = f"{{self.prefix}}-{{self.env}}-{{self.profile.iac_key}}"
         repo_uri = self._get_ecr_repo_uri(ecr_client, repo_name)
 
         # 3. ECR login
@@ -789,31 +824,33 @@ class EcsEngine:
         result = ecs_client.register_task_definition(**task_def)
         task_def_arn = result["taskDefinition"]["taskDefinitionArn"]
 
-        desired_count = self._get_output(f"ecs_services.{{self.profile.name}}.compute_config.desired_count")
+        iac_key = self.profile.iac_key
+        desired_count = self._get_output(f"ecs_services.{{iac_key}}.compute_config.desired_count")
         if desired_count is None:
-            raise ValueError(f"Missing IaC output: ecs_services.{{self.profile.name}}.compute_config.desired_count")
+            raise ValueError(f"Missing IaC output: ecs_services.{{iac_key}}.compute_config.desired_count")
 
         ecs_client.update_service(
             cluster=cluster,
-            service=self.profile.name,
+            service=iac_key,
             taskDefinition=task_def_arn,
             desiredCount=desired_count,
             forceNewDeployment=self.profile.has_sidecars,
         )
 
-        self._wait_for_deployment(ecs_client, cluster, self.profile.name)
+        self._wait_for_deployment(ecs_client, cluster, iac_key)
         logger.info(f"✅ {{self.profile.name}} deployed successfully")
 
     # ── Internal helpers ──────────────────────────────────────────────
 
     def _build_task_definition(self, image_uri: str) -> dict[str, Any]:
         svc = self.profile.name
-        cpu = self._require_output(f"ecs_services.{{svc}}.compute_config.cpu")
-        memory = self._require_output(f"ecs_services.{{svc}}.compute_config.memory")
-        exec_role = self._require_output(f"ecs_services.{{svc}}.execution_role_arn")
-        task_role = self._require_output(f"ecs_services.{{svc}}.task_role_arn")
-        log_group = self._require_output(f"ecs_services.{{svc}}.log_group_name")
-        container_config = self._require_output(f"ecs_services.{{svc}}.container_config")
+        iac_key = self.profile.iac_key
+        cpu = self._require_output(f"ecs_services.{{iac_key}}.compute_config.cpu")
+        memory = self._require_output(f"ecs_services.{{iac_key}}.compute_config.memory")
+        exec_role = self._require_output(f"ecs_services.{{iac_key}}.execution_role_arn")
+        task_role = self._require_output(f"ecs_services.{{iac_key}}.task_role_arn")
+        log_group = self._require_output(f"ecs_services.{{iac_key}}.log_group_name")
+        container_config = self._require_output(f"ecs_services.{{iac_key}}.container_config")
         container_port = container_config["port"]
         aws_region = self.session.region_name
 
@@ -874,7 +911,7 @@ class EcsEngine:
             containers.append(sidecar)
 
         task_def: dict[str, Any] = {{
-            "family": f"{{self.prefix}}-{{self.env}}-{{svc}}",
+            "family": f"{{self.prefix}}-{{self.env}}-{{iac_key}}",
             "networkMode": "awsvpc",
             "requiresCompatibilities": ["FARGATE"],
             "cpu": str(cpu),
@@ -885,7 +922,7 @@ class EcsEngine:
         }}
 
         # EFS volumes
-        efs_info = self._get_output(f"ecs_services.{{svc}}.efs")
+        efs_info = self._get_output(f"ecs_services.{{iac_key}}.efs")
         if efs_info and isinstance(efs_info, dict):
             fs_id = efs_info.get("file_system_id")
             if fs_id:
@@ -916,7 +953,7 @@ class EcsEngine:
 
     def _calculate_image_uri(self) -> str:
         ecr_client = self.session.client("ecr")
-        repo_name = f"{{self.prefix}}-{{self.env}}-{{self.profile.name}}"
+        repo_name = f"{{self.prefix}}-{{self.env}}-{{self.profile.iac_key}}"
         repo_uri = self._get_ecr_repo_uri(ecr_client, repo_name)
         git_sha = self._get_git_sha()
         return f"{{repo_uri}}:{{git_sha}}"
@@ -1043,8 +1080,8 @@ class S3StaticEngine:
         # 4. Find output directory
         output_dir = self._find_output_dir()
 
-        # 5. Sync to S3
-        bucket = f"{{self.prefix}}-{{self.env}}-{{self.profile.name}}-static"
+        # 5. Sync to S3 (bucket name from IaC outputs or convention)
+        bucket = self._get_bucket_name()
         self._sync_to_s3(output_dir, bucket)
 
         # 6. Invalidate CDN
@@ -1078,6 +1115,14 @@ class S3StaticEngine:
                 )
         logger.info(f"✅ Synced to s3://{{bucket}}/")
 
+    def _get_bucket_name(self) -> str:
+        """Get S3 bucket name from IaC outputs or convention."""
+        iac_key = self.profile.iac_key
+        bucket = self._get_output(f"static_sites.{{iac_key}}.bucket_name")
+        if bucket:
+            return bucket
+        return f"{{self.prefix}}-{{self.env}}-{{iac_key}}"
+
     def _invalidate_cdn(self) -> None:
         dist_id = self._get_distribution_id()
         if not dist_id:
@@ -1094,13 +1139,14 @@ class S3StaticEngine:
         logger.info(f"✅ CloudFront invalidation created for {{dist_id}}")
 
     def _get_distribution_id(self) -> str | None:
-        # Try IaC outputs
+        iac_key = self.profile.iac_key
+        # Try static_sites output path
         dist_id = self._get_output(
-            f"ecs_services.{{self.profile.name}}.cloudfront.distribution_id"
+            f"static_sites.{{iac_key}}.cloudfront_distribution_id"
         )
         if dist_id:
             return dist_id
-        # Fallback: try frontend-specific output path
+        # Fallback: try legacy output paths
         dist_id = self._get_output(
             f"cloudfront_distributions.{{self.profile.name}}.distribution_id"
         )
@@ -1148,6 +1194,345 @@ class S3StaticEngine:
 '''
 
 
+def _gen_tfvars_generator(manifest: ProjectManifest, header: str) -> str:
+    return f'''{header}
+"""Pipeline tfvars generator \u2014 fetches IAC config and writes .auto.tfvars.json.
+
+Mirrors the logic from ``foundry generate tfvars`` but runs in CI pipelines
+without requiring the Foundry CLI.  Reads foundry.json for service identity
+and naming, fetches infrastructure config from Secrets Manager, resolves
+template variables and cross-references, and writes JSON tfvars.
+
+Data flow:
+  foundry.json (service names, kinds, strategies, prefix)
+  + Secrets Manager ({{prefix}}-{{env}}/iac/config)
+  + STS (account_id) + Route 53 (hosted_zone_id)
+  -> ci/iac/{{env}}/{{env}}.auto.tfvars.json
+"""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+# -- Naming Conventions ---------------------------------------------------
+
+
+def _iac_service_name(manifest_name: str, kind: str) -> str:
+    """Derive the IaC key for an ECS service from manifest name + kind.
+
+    Backends get ``-service`` suffix, frontends get ``-frontend``.
+    """
+    if kind == "backend":
+        return f"{{manifest_name}}-service"
+    if kind == "frontend":
+        return f"{{manifest_name}}-frontend"
+    return manifest_name
+
+
+def _iac_static_site_name(manifest_name: str) -> str:
+    """Derive the IaC key for a static site from manifest name."""
+    if manifest_name.endswith("-frontend"):
+        return manifest_name
+    return f"{{manifest_name}}-frontend"
+
+
+# -- Template & Cross-Reference Resolution --------------------------------
+
+
+def _resolve_templates(value: Any, variables: dict[str, str]) -> Any:
+    """Walk a data structure and resolve ``{{placeholder}}`` templates."""
+    if isinstance(value, str):
+        try:
+            return value.format_map(variables)
+        except (KeyError, ValueError):
+            return value
+    if isinstance(value, dict):
+        return {{k: _resolve_templates(v, variables) for k, v in value.items()}}
+    if isinstance(value, (list, tuple)):
+        return [_resolve_templates(v, variables) for v in value]
+    return value
+
+
+def _resolve_refs(value: Any, name_map: dict[str, str]) -> Any:
+    """Walk a data structure and resolve ``service:XXX`` cross-references."""
+    if isinstance(value, str):
+        for manifest_name, iac_name in name_map.items():
+            value = value.replace(
+                f"service:{{manifest_name}}", f"service:{{iac_name}}"
+            )
+        return value
+    if isinstance(value, dict):
+        return {{k: _resolve_refs(v, name_map) for k, v in value.items()}}
+    if isinstance(value, (list, tuple)):
+        return [_resolve_refs(v, name_map) for v in value]
+    return value
+
+
+# -- AWS Helpers ----------------------------------------------------------
+
+
+def _fetch_iac_config(session: Any, secret_id: str) -> dict[str, Any]:
+    """Fetch the IAC config JSON from Secrets Manager."""
+    client = session.client("secretsmanager")
+    logger.info("Fetching IAC config from secret: %s", secret_id)
+    response = client.get_secret_value(SecretId=secret_id)
+    config = json.loads(response["SecretString"])
+    logger.info(
+        "Loaded IAC config: %d top-level keys, %d service configs",
+        len(config),
+        len(config.get("services", {{}})),
+    )
+    return config
+
+
+def _resolve_account_id(session: Any) -> str:
+    """Get the AWS account ID from STS."""
+    try:
+        sts = session.client("sts")
+        identity = sts.get_caller_identity()
+        account_id = identity["Account"]
+        logger.info("Resolved account_id from STS: %s", account_id)
+        return account_id
+    except Exception as exc:
+        logger.warning("Could not resolve account_id: %s", exc)
+        return "000000000000"
+
+
+def _resolve_hosted_zone_id(session: Any, domain_name: str) -> str:
+    """Resolve the Route 53 hosted zone ID for a domain."""
+    if not domain_name:
+        return ""
+    try:
+        r53 = session.client("route53")
+        response = r53.list_hosted_zones_by_name(DNSName=domain_name, MaxItems="1")
+        zones = response.get("HostedZones", [])
+        for zone in zones:
+            zone_name = zone["Name"].rstrip(".")
+            if zone_name == domain_name.rstrip("."):
+                zone_id = zone["Id"].split("/")[-1]
+                logger.info(
+                    "Resolved hosted_zone_id for %s: %s", domain_name, zone_id
+                )
+                return zone_id
+        logger.warning("No hosted zone found for domain: %s", domain_name)
+    except Exception as exc:
+        logger.warning("Could not resolve hosted_zone_id for %s: %s", domain_name, exc)
+    return ""
+
+
+# -- Main Generator -------------------------------------------------------
+
+
+def generate_tfvars_json(
+    manifest: Any,
+    env_name: str,
+    session: Any,
+    prefix: str,
+) -> dict[str, Any]:
+    """Generate the complete tfvars dict from manifest + Secrets Manager.
+
+    Args:
+        manifest: A loaded ``Manifest`` from manifest_reader.
+        env_name: Target environment name (e.g., ``prod``).
+        session: A boto3 Session.
+        prefix: Platform prefix (e.g., ``aap``).
+
+    Returns:
+        Dict ready to be serialized as JSON and written to .auto.tfvars.json.
+    """
+    from core.conventions import resolve_all_profiles
+
+    name_prefix = f"{{prefix}}-{{env_name}}"
+
+    # -- Fetch IAC config from Secrets Manager ----------------------------
+    secret_id = f"{{name_prefix}}/iac/config"
+    iac_config = _fetch_iac_config(session, secret_id)
+    region = iac_config.get("region", "us-east-1")
+
+    # -- Resolve AWS identity ---------------------------------------------
+    account_id = _resolve_account_id(session)
+
+    domain_cfg: dict[str, Any] = iac_config.get("domain", {{}})
+    hosted_zone_id = domain_cfg.get("hosted_zone_id", "")
+    if not hosted_zone_id:
+        hosted_zone_id = _resolve_hosted_zone_id(
+            session, domain_cfg.get("name", "")
+        )
+
+    # -- Resolve deployment profiles --------------------------------------
+    profiles = resolve_all_profiles(manifest)
+
+    # Build naming map (manifest_name -> iac_name)
+    name_map: dict[str, str] = {{}}
+    for manifest_name, profile in profiles.items():
+        if not profile.is_deployable:
+            continue
+        if profile.strategy == "static":
+            name_map[manifest_name] = _iac_static_site_name(manifest_name)
+        else:
+            name_map[manifest_name] = _iac_service_name(
+                manifest_name, profile.kind
+            )
+
+    # Global template variables
+    global_vars: dict[str, str] = {{
+        "prefix": prefix,
+        "env": env_name,
+        "name_prefix": name_prefix,
+        "account_id": account_id,
+        "region": region,
+    }}
+
+    # -- Platform block ---------------------------------------------------
+    emp_ip_whitelist = iac_config.get("emp_ip_whitelist", [])
+    platform_tags = {{**iac_config.get("tags", {{}}), "Environment": env_name}}
+    platform_block: dict[str, Any] = {{
+        "name": manifest.name or "Platform",
+        "prefix": prefix,
+        "environment": env_name,
+        "region": region,
+        "account_id": account_id,
+        "emp_ip_whitelist": emp_ip_whitelist,
+        "tags": platform_tags,
+    }}
+
+    # -- Services from secret config --------------------------------------
+    secret_services: dict[str, Any] = iac_config.get("services", {{}})
+
+    # -- ECS services -----------------------------------------------------
+    ecs_services: dict[str, dict[str, Any]] = {{}}
+    for manifest_name, profile in sorted(profiles.items()):
+        if not profile.is_deployable or profile.strategy == "static":
+            continue
+
+        svc_iac: dict[str, Any] = secret_services.get(manifest_name, {{}})
+        if not svc_iac:
+            logger.warning(
+                "Service '%s' has no IAC config in secret \u2014 skipping",
+                manifest_name,
+            )
+            continue
+
+        iac_key = _iac_service_name(manifest_name, profile.kind)
+        svc_vars: dict[str, str] = {{
+            **global_vars,
+            "iac_name": iac_key,
+            "manifest_name": manifest_name,
+        }}
+        resolved = _resolve_templates(svc_iac, svc_vars)
+        resolved = _resolve_refs(resolved, name_map)
+        ecs_services[iac_key] = resolved
+
+    # -- Static sites -----------------------------------------------------
+    static_sites: dict[str, dict[str, Any]] = {{}}
+    for manifest_name, profile in sorted(profiles.items()):
+        if profile.strategy != "static":
+            continue
+
+        site_iac: dict[str, Any] = secret_services.get(manifest_name, {{}})
+        if not site_iac:
+            logger.warning(
+                "Static site '%s' has no IAC config in secret \u2014 skipping",
+                manifest_name,
+            )
+            continue
+
+        iac_key = _iac_static_site_name(manifest_name)
+        svc_vars: dict[str, str] = {{
+            **global_vars,
+            "iac_name": iac_key,
+            "manifest_name": manifest_name,
+        }}
+        resolved = _resolve_templates(site_iac, svc_vars)
+        static_sites[iac_key] = resolved
+
+    # -- Assemble output --------------------------------------------------
+    tfvars: dict[str, Any] = {{
+        "platform": platform_block,
+    }}
+
+    # SES
+    ses_arn = iac_config.get("ses_identity_arn")
+    if ses_arn:
+        tfvars["ses_identity_arn"] = _resolve_templates(ses_arn, global_vars)
+
+    # Domain
+    domain = iac_config.get("domain")
+    if domain:
+        domain = dict(domain)
+        if hosted_zone_id:
+            domain["hosted_zone_id"] = hosted_zone_id
+        tfvars["domain"] = _resolve_templates(domain, global_vars)
+
+    # Services
+    if ecs_services:
+        tfvars["services"] = ecs_services
+
+    # Bastion
+    bastion = iac_config.get("bastion")
+    if bastion:
+        tfvars["bastion"] = bastion
+
+    # Static sites
+    if static_sites:
+        tfvars["static_sites"] = static_sites
+
+    # Lambda functions
+    lambda_fns = iac_config.get("lambda_functions")
+    if lambda_fns:
+        resolved_lambdas = _resolve_templates(lambda_fns, global_vars)
+        resolved_lambdas = _resolve_refs(resolved_lambdas, name_map)
+        tfvars["lambda_functions"] = resolved_lambdas
+
+    # EventBridge rules
+    eb_rules = iac_config.get("eventbridge_rules")
+    if eb_rules:
+        resolved_eb = _resolve_templates(eb_rules, global_vars)
+        resolved_eb = _resolve_refs(resolved_eb, name_map)
+        tfvars["eventbridge_rules"] = resolved_eb
+
+    return tfvars
+
+
+def write_tfvars_json(
+    manifest: Any,
+    env_name: str,
+    session: Any,
+    prefix: str,
+    output_dir: Path,
+) -> Path:
+    """Generate tfvars and write to {{env}}.auto.tfvars.json.
+
+    Args:
+        manifest: A loaded ``Manifest`` from manifest_reader.
+        env_name: Target environment name (e.g., ``prod``).
+        session: A boto3 Session.
+        prefix: Platform prefix (e.g., ``aap``).
+        output_dir: The IaC working directory (e.g., ``ci/iac/prod``).
+
+    Returns:
+        Path to the written .auto.tfvars.json file.
+    """
+    tfvars = generate_tfvars_json(manifest, env_name, session, prefix)
+
+    output_path = output_dir / f"{{env_name}}.auto.tfvars.json"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(
+        json.dumps(tfvars, indent=2, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    logger.info("Wrote tfvars to %s (%d bytes)", output_path, output_path.stat().st_size)
+    return output_path
+'''
+
+
 def _gen_iac_engine(manifest: ProjectManifest, header: str) -> str:
     iac = manifest.data.get("ci", {}).get("iac", "opentofu")
     binary = "tofu" if iac == "opentofu" else "terraform"
@@ -1157,6 +1542,7 @@ def _gen_iac_engine(manifest: ProjectManifest, header: str) -> str:
 """IaC engine — runs OpenTofu/Terraform plan and apply.
 
 Reads the IaC directory from the manifest and runs the appropriate binary.
+Automatically generates .auto.tfvars.json from Secrets Manager before planning.
 """
 
 from __future__ import annotations
@@ -1183,9 +1569,28 @@ class IacEngine:
         self.session = session
         self.work_dir = Path(IAC_DIR) / self.env
 
+    def _generate_tfvars(self) -> None:
+        """Generate .auto.tfvars.json from Secrets Manager config.
+
+        Fetches infrastructure configuration from the IAC config secret
+        ({{prefix}}-{{env}}/iac/config), resolves naming conventions and
+        template variables, and writes {{env}}.auto.tfvars.json into the
+        IaC working directory so that OpenTofu/Terraform auto-loads it.
+        """
+        from core.manifest_reader import Manifest
+        from core.tfvars_generator import write_tfvars_json
+
+        logger.info("📝 Generating tfvars from Secrets Manager...")
+        manifest = Manifest.load()
+        tfvars_path = write_tfvars_json(
+            manifest, self.env, self.session, self.prefix, self.work_dir,
+        )
+        logger.info(f"✅ Generated {{tfvars_path}}")
+
     def plan(self) -> None:
         """Run IaC plan."""
         logger.info(f"📋 Running {{IAC_BINARY}} plan in {{self.work_dir}}...")
+        self._generate_tfvars()
         self._run(["init", "-input=false"])
         self._run(["plan", "-input=false", "-out=tfplan"])
 
@@ -1224,61 +1629,433 @@ class IacEngine:
 
 def _gen_database_engine(manifest: ProjectManifest, header: str) -> str:
     return f'''{header}
-"""Database migration engine — runs Liquibase migrations.
+"""Database migration engine — runs Liquibase migrations via SSH tunnel.
 
-Reads the databases block from foundry.json and runs migrations for each
-database that needs updating.
+Reads database configuration from foundry.json services (inline database
+blocks), fetches IaC outputs to get bastion and database endpoint info,
+opens an SSH tunnel through the bastion, fetches credentials from Secrets
+Manager, and runs Liquibase through the tunnel.
 """
 
 from __future__ import annotations
 
 import json
 import logging
+import os
+import shutil
+import socket
 import subprocess
+import tempfile
+import time
+import urllib.request
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Default JDBC drivers and URL patterns per engine
+_JDBC_DRIVERS: dict[str, str] = {{
+    "mariadb": "org.mariadb.jdbc.Driver",
+    "mysql": "com.mysql.cj.jdbc.Driver",
+    "postgresql": "org.postgresql.Driver",
+    "postgres": "org.postgresql.Driver",
+}}
+
+_JDBC_URL_TEMPLATES: dict[str, str] = {{
+    "mariadb": "jdbc:mariadb://{{host}}:{{port}}/{{database}}?sslMode=trust",
+    "mysql": "jdbc:mysql://{{host}}:{{port}}/{{database}}?sslMode=trust",
+    "postgresql": "jdbc:postgresql://{{host}}:{{port}}/{{database}}?currentSchema={{schema}}",
+    "postgres": "jdbc:postgresql://{{host}}:{{port}}/{{database}}?currentSchema={{schema}}",
+}}
+
+_DEFAULT_PORTS: dict[str, int] = {{
+    "mariadb": 3306,
+    "mysql": 3306,
+    "postgresql": 5432,
+    "postgres": 5432,
+}}
+
+# Liquibase download URL
+_LIQUIBASE_VERSION = "4.29.2"
+_LIQUIBASE_DOWNLOAD = f"https://github.com/liquibase/liquibase/releases/download/v{{_LIQUIBASE_VERSION}}/liquibase-{{_LIQUIBASE_VERSION}}.tar.gz"
+
+
+def _is_port_open(host: str, port: int, timeout: float = 0.5) -> bool:
+    """Check if a port is accepting connections."""
+    try:
+        with socket.create_connection((host, port), timeout=timeout):
+            return True
+    except OSError:
+        return False
+
 
 class DatabaseEngine:
-    """Runs Liquibase database migrations."""
+    """Runs Liquibase database migrations through an SSH bastion tunnel."""
 
     def __init__(self, environment: str, prefix: str, session: Any):
         self.env = environment
         self.prefix = prefix
         self.session = session
         self.manifest = json.loads(Path("foundry.json").read_text(encoding="utf-8"))
+        self._iac_outputs: dict[str, Any] | None = None
+        self._tunnels: list[Any] = []  # subprocess.Popen instances
+        self._key_file: str | None = None
+        self._sg_rule_added: dict[str, str] | None = None  # tracks dynamic SG rule
+        self._ensure_liquibase()
 
-    def migrate_all(self) -> None:
-        """Run migrations for all databases in the manifest."""
-        databases = self.manifest.get("databases", {{}})
-        for db_name, db_config in databases.items():
-            self.migrate(db_name, db_config)
-
-    def migrate(self, db_name: str, db_config: dict[str, Any]) -> None:
-        """Run Liquibase migration for a single database."""
-        engine = db_config.get("engine", "mariadb")
-        changelog = db_config.get("changelog")
-        properties = db_config.get("properties")
-
-        if not changelog:
-            logger.warning(f"⚠️ No changelog for database {{db_name}} — skipping")
+    def _ensure_liquibase(self) -> None:
+        """Ensure Liquibase is available on PATH."""
+        if shutil.which("liquibase"):
             return
 
-        logger.info(f"🗄️ Migrating database: {{db_name}} ({{engine}})")
+        logger.info("Liquibase not found - installing...")
+        install_dir = Path("/tmp/liquibase")
+        install_dir.mkdir(parents=True, exist_ok=True)
+        tar_path = install_dir / "liquibase.tar.gz"
+
+        urllib.request.urlretrieve(_LIQUIBASE_DOWNLOAD, str(tar_path))
+        subprocess.run(
+            ["tar", "xzf", str(tar_path), "-C", str(install_dir)],
+            check=True,
+        )
+        os.environ["PATH"] = f"{{install_dir}}:{{os.environ.get('PATH', '')}}"
+        logger.info(f"Liquibase installed to {{install_dir}}")
+
+    def _load_iac_outputs(self) -> dict[str, Any]:
+        """Load IaC outputs from the artifact directory."""
+        if self._iac_outputs is not None:
+            return self._iac_outputs
+
+        outputs_file = Path("iac-outputs/iac-outputs.json")
+        if not outputs_file.exists():
+            raise RuntimeError(
+                f"IaC outputs not found at {{outputs_file}}. "
+                "Ensure deploy-iac ran first and the artifact was downloaded."
+            )
+
+        raw = json.loads(outputs_file.read_text(encoding="utf-8"))
+        # OpenTofu outputs are wrapped in {{"value": ..., "type": ...}}
+        self._iac_outputs = {{
+            k: v.get("value", v) if isinstance(v, dict) and "value" in v else v
+            for k, v in raw.items()
+        }}
+        return self._iac_outputs
+
+    def _fetch_bastion_key(self, secret_name: str) -> str:
+        """Fetch the bastion SSH private key from Secrets Manager and write to a temp file."""
+        if self._key_file:
+            return self._key_file
+
+        client = self.session.client("secretsmanager")
+        response = client.get_secret_value(SecretId=secret_name)
+        secret = json.loads(response["SecretString"])
+        pem = secret.get("private_key_pem", response["SecretString"])
+
+        key_path = Path(tempfile.mktemp(prefix="bastion-", suffix=".pem"))
+        key_path.write_text(pem, encoding="utf-8")
+        key_path.chmod(0o400)
+
+        self._key_file = str(key_path)
+        logger.info(f"Bastion SSH key written to {{key_path}}")
+        return self._key_file
+
+    def _open_tunnel(
+        self,
+        bastion_ip: str,
+        bastion_user: str,
+        key_file: str,
+        remote_host: str,
+        remote_port: int,
+        local_port: int,
+    ) -> subprocess.Popen:
+        """Open an SSH tunnel through the bastion using the system ssh binary."""
+        if _is_port_open("127.0.0.1", local_port):
+            logger.info(f"Port {{local_port}} already open - tunnel may be active")
+            return None
+
+        cmd = [
+            "ssh", "-N",
+            "-o", "StrictHostKeyChecking=no",
+            "-o", "UserKnownHostsFile=/dev/null",
+            "-o", "ServerAliveInterval=30",
+            "-o", "ConnectTimeout=15",
+            "-o", "ExitOnForwardFailure=yes",
+            "-i", key_file,
+            "-L", f"{{local_port}}:{{remote_host}}:{{remote_port}}",
+            f"{{bastion_user}}@{{bastion_ip}}",
+        ]
+
+        logger.info(
+            f"Opening SSH tunnel: localhost:{{local_port}} -> "
+            f"{{remote_host}}:{{remote_port}} via {{bastion_ip}}"
+        )
+        proc = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+        )
+
+        # Wait for tunnel to be ready (ssh stays alive as foreground process)
+        for attempt in range(30):
+            # Check if ssh exited with an error
+            ret = proc.poll()
+            if ret is not None:
+                stderr = proc.stderr.read().decode() if proc.stderr else ""
+                raise RuntimeError(
+                    f"SSH tunnel process exited with code {{ret}}: {{stderr.strip()}}"
+                )
+            if _is_port_open("127.0.0.1", local_port):
+                logger.info(f"SSH tunnel established on port {{local_port}}")
+                return proc
+            time.sleep(1)
+
+        # Tunnel didn't open in time — kill and report
+        proc.terminate()
+        stderr = proc.stderr.read().decode() if proc.stderr else ""
+        raise RuntimeError(
+            f"SSH tunnel failed to open on port {{local_port}} after 30s: {{stderr.strip()}}"
+        )
+
+    def _collect_databases(self) -> dict[str, dict[str, Any]]:
+        """Collect database configs from services (v0.5.0 inline) and top-level (v0.3.0)."""
+        databases: dict[str, dict[str, Any]] = {{}}
+
+        # v0.3.0: top-level databases block
+        for db_name, db_cfg in self.manifest.get("databases", {{}}).items():
+            if isinstance(db_cfg, dict):
+                databases[db_name] = db_cfg
+
+        # v0.5.0: inline database blocks in services
+        for svc_name, svc_cfg in self.manifest.get("services", {{}}).items():
+            if isinstance(svc_cfg, dict) and isinstance(svc_cfg.get("database"), dict):
+                databases[svc_name] = svc_cfg["database"]
+
+        return databases
+
+    def _iac_db_key(self, manifest_name: str) -> str:
+        """Derive the IaC key for a service (backends get -service, frontends get -frontend)."""
+        services = self.manifest.get("services", {{}})
+        svc_cfg = services.get(manifest_name, {{}})
+        kind = svc_cfg.get("stack", {{}}).get("type", "backend")
+        if kind == "backend":
+            return f"{{manifest_name}}-service"
+        elif kind == "frontend":
+            return f"{{manifest_name}}-frontend"
+        return manifest_name
+
+    def _fetch_db_credentials(self, db_config: dict[str, Any]) -> dict[str, str]:
+        """Fetch database credentials from Secrets Manager."""
+        creds_cfg = db_config.get("credentials", {{}})
+        secret_id = creds_cfg.get("secretId", "")
+
+        if not secret_id:
+            logger.warning("No secretId for database credentials")
+            return {{}}
+
+        client = self.session.client("secretsmanager")
+        response = client.get_secret_value(SecretId=secret_id)
+        return json.loads(response["SecretString"])
+
+    def migrate_all(self) -> None:
+        """Run migrations for all databases through SSH tunnel."""
+        databases = self._collect_databases()
+        if not databases:
+            logger.info("No databases found in manifest")
+            return
+
+        logger.info(f"Found {{len(databases)}} database(s) to migrate")
+
+        # Load IaC outputs for bastion and database endpoints
+        iac = self._load_iac_outputs()
+        bastion_info = iac.get("bastion", {{}})
+        db_outputs = iac.get("databases", {{}})
+        bastion_ip = bastion_info.get("public_ip") or bastion_info.get("elastic_ip")
+
+        if not bastion_ip:
+            raise RuntimeError("No bastion IP found in IaC outputs")
+
+        # Fetch bastion SSH key
+        key_secret = bastion_info.get("ssh_key_secret_name")
+        if not key_secret:
+            raise RuntimeError("No bastion SSH key secret name in IaC outputs")
+        key_file = self._fetch_bastion_key(key_secret)
+
+        # Dynamically whitelist runner IP in bastion security group for SSH
+        sg_id = bastion_info.get("security_group_id")
+        if sg_id:
+            self._whitelist_runner_ip(sg_id)
+        else:
+            logger.warning("No bastion security_group_id in IaC outputs — "
+                           "SSH may fail if runner IP is not whitelisted")
+
+        try:
+            for db_name, db_config in databases.items():
+                self._migrate_with_tunnel(
+                    db_name, db_config, bastion_ip, key_file, db_outputs,
+                )
+        finally:
+            self._cleanup()
+
+    def _get_runner_ip(self) -> str:
+        """Get the public IP of the current runner."""
+        try:
+            resp = urllib.request.urlopen("https://checkip.amazonaws.com", timeout=10)
+            return resp.read().decode().strip()
+        except Exception:
+            resp = urllib.request.urlopen("https://ifconfig.me/ip", timeout=10)
+            return resp.read().decode().strip()
+
+    def _whitelist_runner_ip(self, security_group_id: str) -> None:
+        """Add the runner's public IP to the bastion security group for SSH access."""
+        try:
+            runner_ip = self._get_runner_ip()
+            logger.info(f"Runner public IP: {{runner_ip}}")
+
+            ec2_client = self.session.client("ec2")
+            cidr = f"{{runner_ip}}/32"
+            ec2_client.authorize_security_group_ingress(
+                GroupId=security_group_id,
+                IpPermissions=[{{
+                    "IpProtocol": "tcp",
+                    "FromPort": 22,
+                    "ToPort": 22,
+                    "IpRanges": [{{"CidrIp": cidr, "Description": "CI runner - temporary"}}],
+                }}],
+            )
+            self._sg_rule_added = {{"sg_id": security_group_id, "cidr": cidr}}
+            logger.info(f"✅ Added SSH ingress rule for {{cidr}} to {{security_group_id}}")
+        except Exception as e:
+            if "InvalidPermission.Duplicate" in str(e):
+                logger.info("Runner IP already whitelisted in bastion SG")
+            else:
+                logger.warning(f"⚠️ Could not whitelist runner IP: {{e}}")
+
+    def _revoke_runner_ip(self) -> None:
+        """Remove the runner's IP from the bastion security group."""
+        if not self._sg_rule_added:
+            return
+        try:
+            ec2_client = self.session.client("ec2")
+            sg_id = self._sg_rule_added["sg_id"]
+            cidr = self._sg_rule_added["cidr"]
+            ec2_client.revoke_security_group_ingress(
+                GroupId=sg_id,
+                IpPermissions=[{{
+                    "IpProtocol": "tcp",
+                    "FromPort": 22,
+                    "ToPort": 22,
+                    "IpRanges": [{{"CidrIp": cidr}}],
+                }}],
+            )
+            logger.info(f"✅ Removed SSH ingress rule for {{cidr}} from {{sg_id}}")
+            self._sg_rule_added = None
+        except Exception as e:
+            logger.warning(f"⚠️ Could not remove runner IP from SG: {{e}}")
+
+    def _migrate_with_tunnel(
+        self,
+        db_name: str,
+        db_config: dict[str, Any],
+        bastion_ip: str,
+        key_file: str,
+        db_outputs: dict[str, Any],
+    ) -> None:
+        """Migrate a single database through an SSH tunnel."""
+        engine = db_config.get("engine", "mariadb")
+        changelog = db_config.get("changelog")
+        schema = db_config.get("schema", "")
+
+        if not changelog:
+            logger.warning(f"No changelog for database {{db_name}} - skipping")
+            return
+
+        logger.info(f"Migrating database: {{db_name}} ({{engine}})")
+
+        # Get database endpoint from IaC outputs (IaC uses convention keys)
+        iac_key = self._iac_db_key(db_name)
+        db_out = db_outputs.get(iac_key, db_outputs.get(db_name, {{}}))
+        remote_host = db_out.get("address", "")
+        remote_port = int(db_out.get("port", _DEFAULT_PORTS.get(engine, 3306)))
+
+        if not remote_host:
+            logger.error(f"No database endpoint found in IaC outputs for {{db_name}} (tried key '{{iac_key}}')") 
+            return
+
+        # Pick a local port for the tunnel
+        local_port = self._find_free_port()
+
+        # Open SSH tunnel
+        tunnel = self._open_tunnel(
+            bastion_ip=bastion_ip,
+            bastion_user="ec2-user",
+            key_file=key_file,
+            remote_host=remote_host,
+            remote_port=remote_port,
+            local_port=local_port,
+        )
+        if tunnel:
+            self._tunnels.append(tunnel)
+
+        # Fetch credentials from Secrets Manager
+        creds = self._fetch_db_credentials(db_config)
+        if not creds:
+            logger.error(f"Could not fetch credentials for {{db_name}}")
+            return
+
+        username = creds.get("username", "")
+        password = creds.get("password", "")
+        database = creds.get("database", creds.get("dbname", db_name))
+        driver = _JDBC_DRIVERS.get(engine, "")
+
+        url_template = _JDBC_URL_TEMPLATES.get(engine, "")
+        url = url_template.format(
+            host="127.0.0.1",
+            port=local_port,
+            database=database,
+            schema=schema or "public",
+        )
+
+        env = os.environ.copy()
+        env["LIQUIBASE_COMMAND_URL"] = url
+        env["LIQUIBASE_COMMAND_USERNAME"] = username
+        env["LIQUIBASE_COMMAND_PASSWORD"] = password
+        if schema:
+            env["LIQUIBASE_COMMAND_DEFAULT_SCHEMA_NAME"] = schema
 
         args = [
             "liquibase",
             f"--changelog-file={{changelog}}",
+            f"--driver={{driver}}",
             "update",
         ]
-        if properties:
-            args.insert(1, f"--defaults-file={{properties}}")
 
-        logger.info(f"Running: {{' '.join(args)}}")
-        subprocess.run(args, check=True)
-        logger.info(f"✅ Database {{db_name}} migrated successfully")
+        log_args = list(args)
+        logger.info(f"Running: {{' '.join(log_args)}}")
+        logger.info(f"  URL: jdbc:...://127.0.0.1:{{local_port}}/{{database}} (via tunnel)")
+        subprocess.run(args, check=True, env=env)
+        logger.info(f"Database {{db_name}} migrated successfully")
+
+    @staticmethod
+    def _find_free_port() -> int:
+        """Find an available local port."""
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            s.bind(("", 0))
+            return s.getsockname()[1]
+
+    def _cleanup(self) -> None:
+        """Close all SSH tunnels, remove temp key file, and revoke SG rule."""
+        for proc in self._tunnels:
+            if proc and proc.poll() is None:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+        self._tunnels.clear()
+
+        if self._key_file and Path(self._key_file).exists():
+            Path(self._key_file).unlink(missing_ok=True)
+            logger.info("Cleaned up bastion SSH key file")
+
+        self._revoke_runner_ip()
 '''
 
 
@@ -1516,7 +2293,7 @@ def service(name: str, environment: str, operation: str):
     profile = profiles[name]
     session = boto3.Session()
 
-    if profile.strategy == "ecs":
+    if profile.strategy == "service":
         engine = EcsEngine(profile, environment, manifest.prefix, session)
         if operation == "build-push":
             engine.build_and_push()
@@ -1526,12 +2303,12 @@ def service(name: str, environment: str, operation: str):
             image_uri = engine.build_and_push()
             engine.deploy(image_uri)
 
-    elif profile.strategy == "s3-static":
+    elif profile.strategy == "static":
         engine = S3StaticEngine(profile, environment, manifest.prefix, session)
         if operation in ("build-deploy",):
             engine.build_and_deploy()
         else:
-            logger.warning(f"⚠️ Operation '{{operation}}' not applicable for s3-static strategy")
+            logger.warning(f"⚠️ Operation '{{operation}}' not applicable for static strategy")
 
     else:
         logger.error(f"❌ Service {{name}} has strategy '{{profile.strategy}}' — not deployable")
@@ -1562,9 +2339,9 @@ def deploy_all(environment: str):
         # For now, call it directly
         from click.testing import CliRunner
         runner = CliRunner()
-        if profile.strategy == "ecs":
+        if profile.strategy == "service":
             runner.invoke(service, ["--name", name, "--environment", environment, "--operation", "build-deploy"])
-        elif profile.strategy == "s3-static":
+        elif profile.strategy == "static":
             runner.invoke(service, ["--name", name, "--environment", environment, "--operation", "build-deploy"])
 
 
@@ -1582,6 +2359,7 @@ _FILE_GENERATORS: dict[str, Any] = {
     "core/manifest_reader.py": _gen_manifest_reader,
     "core/conventions.py": _gen_conventions,
     "core/secrets.py": _gen_secrets,
+    "core/tfvars_generator.py": _gen_tfvars_generator,
     "engines/__init__.py": _gen_engines_init,
     "engines/ecs_engine.py": _gen_ecs_engine,
     "engines/s3_static_engine.py": _gen_s3_static_engine,

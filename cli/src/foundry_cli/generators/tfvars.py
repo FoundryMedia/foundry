@@ -230,7 +230,7 @@ def _build_name_map(
     for manifest_name, profile in profiles.items():
         if not profile.is_deployable:
             continue
-        if profile.strategy == "s3-static":
+        if profile.strategy == "static":
             name_map[manifest_name] = iac_static_site_name(manifest_name)
         else:
             name_map[manifest_name] = iac_service_name(manifest_name, profile.kind)
@@ -534,7 +534,7 @@ def generate_tfvars(
     for manifest_name, profile in sorted(profiles.items()):
         if not profile.is_deployable:
             continue
-        if profile.strategy == "s3-static":
+        if profile.strategy == "static":
             continue  # Goes to static_sites
 
         # IAC config: prefer secret, fall back to inline foundry.json
@@ -569,7 +569,7 @@ def generate_tfvars(
     static_sites: dict[str, dict[str, Any]] = {}
 
     for manifest_name, profile in sorted(profiles.items()):
-        if profile.strategy != "s3-static":
+        if profile.strategy != "static":
             continue
 
         # IAC config: prefer secret, fall back to inline foundry.json

@@ -321,6 +321,17 @@
         "properties": {
           "description": "Relative path to the Liquibase connection properties file.",
           "type": "string"
+        },
+        "credentials": {
+          "description": "Database credential resolution configuration.",
+          "type": "object",
+          "properties": {
+            "secretId": {
+              "description": "AWS Secrets Manager secret ID containing database credentials (JSON with engine, host, port, dbname, username, password).",
+              "type": "string"
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false
