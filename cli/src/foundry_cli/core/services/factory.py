@@ -10,6 +10,7 @@ from foundry_cli.core.services.runners.node.nextjs import NodeServiceRunner
 from foundry_cli.core.services.runners.python.uvicorn import UvicornServiceRunner
 from foundry_cli.core.services.runners.sidecar import SidecarRunner
 from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
+from foundry_cli.core.services.runners.migration import MigrationAwareRunner
 
 
 class _UnsupportedServiceRunner(ServiceRunner):
@@ -26,7 +27,7 @@ class _UnsupportedServiceRunner(ServiceRunner):
         return _empty()
 
 
-def create_runner(service: DiscoveredService, *, debug: bool = False, command: str = "dev"):
+def create_runner(service: DiscoveredService, *, debug: bool = False, command: str = "dev", migrate_db: bool = False):
     rt = service.runtime.runtime
     cfg = service.config
     
@@ -52,6 +53,7 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
             args=cfg.args,
             env=cfg.env,
             strict_health_ports=strict_health_ports,
+            debug_config=cfg.debug,
         )
 
     # Next.js
@@ -80,6 +82,28 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
     else:
         runner = _UnsupportedServiceRunner(service, command=command)
     
+    # Wrap with migration support if --migrate-db and database config exists
+    if migrate_db and cfg.database_config:
+        from foundry_cli.core.project.manifest import DatabaseConfig as DC
+        db_cfg = DC.from_dict(cfg.database_config)
+
+        # Determine tunnel local port for host override
+        tunnel_local_port = cfg.ssh_tunnel.local_port if cfg.ssh_tunnel else None
+
+        # Get workspace root for resolving relative paths
+        workspace_root = service.path
+        while workspace_root.parent != workspace_root:
+            if (workspace_root / "foundry.json").exists():
+                break
+            workspace_root = workspace_root.parent
+
+        runner = MigrationAwareRunner(
+            inner_runner=runner,
+            db_config=db_cfg,
+            workspace_root=workspace_root if (workspace_root / "foundry.json").exists() else service.path,
+            tunnel_local_port=tunnel_local_port,
+        )
+
     # Wrap with tunnel support if configured
     if cfg.ssh_tunnel is not None:
         # Get workspace root from service path (go up to find foundry.json)

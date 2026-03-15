@@ -32,6 +32,12 @@ def _kill_process_tree(pid: int) -> None:
             pass
 
 
+# 8 MiB – large enough for Java stack traces, Docker JSON blobs, etc.
+# The default asyncio limit is only 64 KiB; exceeding it raises
+# "Separator is not found, and chunk exceed the limit".
+_STREAM_READER_LIMIT = 8 * 1024 * 1024
+
+
 async def _read_stream(
     service_name: str,
     stream_name: str,
@@ -41,7 +47,28 @@ async def _read_stream(
     """Continuously read lines from a stream and queue them as log events."""
     try:
         while True:
-            raw = await stream.readline()
+            try:
+                raw = await stream.readline()
+            except ValueError:
+                # Line exceeds even the increased limit – drain the entire
+                # internal buffer so the stream can continue reading
+                # subsequent lines.  Reading only a small chunk would leave
+                # the oversized data in the buffer and the next readline()
+                # would raise ValueError again immediately.
+                try:
+                    buf_len = len(stream._buffer)  # type: ignore[attr-defined]
+                except Exception:
+                    buf_len = _STREAM_READER_LIMIT
+                raw = await stream.read(max(buf_len, 65536))
+                if not raw:
+                    return
+                # Show first 500 chars so the log is useful but not huge.
+                snippet = raw.decode(errors="replace")[:500]
+                await queue.put(ServiceLogEvent(
+                    service_name=service_name, stream=stream_name,
+                    line=f"{snippet}... (line truncated – exceeded stream buffer limit)",
+                ))
+                continue
             if not raw:
                 return
             line = raw.decode(errors="replace").rstrip("\r\n")
@@ -92,6 +119,7 @@ class ProcessBackedRunner(ServiceRunner):
             env=env,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=_STREAM_READER_LIMIT,
         )
 
         assert self._proc.stdout is not None

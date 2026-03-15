@@ -204,12 +204,12 @@ def _default_secrets(
         ))
     elif kind == "frontend":
         # Frontend env file
-        if strategy == "ecs":
+        if strategy == "service":
             secrets.append(SecretMapping(
                 source="{prefix}-{env}/{service}-env",
                 target=f"{apps_dir}/frontend/{{service}}/.env.production",
             ))
-        elif strategy == "s3-static":
+        elif strategy == "static":
             secrets.append(SecretMapping(
                 source="{prefix}-{env}/{service}-env",
                 target=f"{apps_dir}/frontend/{{service}}/.env.production",
