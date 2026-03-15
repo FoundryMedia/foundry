@@ -267,6 +267,11 @@
           "description": "Maven groupId or npm scope for published packages.",
           "type": "string"
         },
+        "packagesSecret": {
+          "description": "Name of the GitHub Actions secret containing a PAT with read:packages scope for cross-repo access.",
+          "type": "string",
+          "default": "PACKAGES_READ_TOKEN"
+        },
         "modules": {
           "description": "Map of logical module names to their artifact coordinates.",
           "type": "object",

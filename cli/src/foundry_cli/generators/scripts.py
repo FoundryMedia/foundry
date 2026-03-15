@@ -800,6 +800,10 @@ class EcsEngine:
             "-f", str(self.profile.dockerfile),
             "-t", image_uri,
             "--push",
+            # GHA cache for BuildKit cache mounts (Maven .m2, npm, etc.)
+            "--cache-from", "type=gha",
+            "--cache-to", "type=gha,mode=max",
+            # Registry cache for Docker layers
             "--cache-from", f"type=registry,ref={{repo_uri}}:buildcache",
             "--cache-to", f"type=registry,ref={{repo_uri}}:buildcache,mode=max",
             str(self.profile.build_context),

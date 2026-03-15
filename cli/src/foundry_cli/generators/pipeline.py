@@ -53,6 +53,8 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     environments = manifest.environments
     structure = manifest.structure
     ci = data.get("ci", {})
+    github = data.get("github", {})
+    api_lib = github.get("apiLib", {})
     iac_tool = ci.get("iac", "opentofu")
     iac_dir = ci.get("iacDir", "ci/iac")
     schema_version = data.get("schemaVersion", "0.3.0")
@@ -106,6 +108,7 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("permissions:")
     lines.append("  id-token: write")
     lines.append("  contents: read")
+    lines.append("  packages: read")
     lines.append("")
 
     # ── detect-changes job ──
@@ -190,7 +193,7 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("")
 
     for svc_name, profile in deployable.items():
-        _append_service_job(lines, svc_name, profile, databases, structure)
+        _append_service_job(lines, svc_name, profile, databases, structure, api_lib)
 
     # ── Custom jobs marker ──
     lines.append(_CUSTOM_MARKER)
@@ -215,6 +218,7 @@ def _append_service_job(
     profile: DeploymentProfile,
     databases: dict[str, Any],
     structure: StructureConfig,
+    api_lib: dict[str, Any],
 ) -> None:
     """Append a per-service deploy job."""
     # Build the needs list
@@ -261,6 +265,16 @@ def _append_service_job(
         lines.append(f'            --name {name} \\')
         lines.append('            --environment "${{ needs.detect-changes.outputs.environment }}" \\')
         lines.append("            --operation build-push")
+        # Spring Boot services need a token for GitHub Packages auth
+        # Use PACKAGES_READ_TOKEN if apiLib is configured (cross-repo), else github.token
+        if profile.type == "spring-boot":
+            packages_secret = api_lib.get("packagesSecret")
+            if packages_secret:
+                lines.append("        env:")
+                lines.append(f"          GITHUB_TOKEN: ${{{{ secrets.{packages_secret} }}}}")
+            else:
+                lines.append("        env:")
+                lines.append("          GITHUB_TOKEN: ${{ github.token }}")
         lines.append("      - run: |")
         lines.append(f"          python3 ci/scripts/deploy.py service \\")
         lines.append(f'            --name {name} \\')
