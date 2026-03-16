@@ -806,8 +806,13 @@ class EcsEngine:
             # Registry cache for Docker layers
             "--cache-from", f"type=registry,ref={{repo_uri}}:buildcache",
             "--cache-to", f"type=registry,ref={{repo_uri}}:buildcache,mode=max",
-            str(self.profile.build_context),
         ]
+
+        # Pass PACKAGES_READ_TOKEN as GITHUB_TOKEN secret for GitHub Packages auth
+        if os.environ.get("PACKAGES_READ_TOKEN"):
+            build_args.extend(["--secret", "id=GITHUB_TOKEN,env=PACKAGES_READ_TOKEN"])
+
+        build_args.append(str(self.profile.build_context))
 
         logger.info(f"Running: {{' '.join(build_args)}}")
         subprocess.run(build_args, check=True, env=env)
