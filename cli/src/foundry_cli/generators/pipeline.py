@@ -251,7 +251,6 @@ def _append_service_job(
     # because setup-node auto-detects packageManager from package.json)
     if profile.needs_node and not profile.needs_docker:
         lines.append("      - uses: pnpm/action-setup@v4")
-        lines.append("        with: { version: 9 }")
         lines.append("      - uses: actions/setup-node@v5")
         lines.append("        with: { node-version: '22', cache: 'pnpm' }")
 
