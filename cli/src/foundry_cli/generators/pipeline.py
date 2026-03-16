@@ -247,12 +247,13 @@ def _append_service_job(
     if profile.needs_docker:
         lines.append("      - uses: docker/setup-buildx-action@v3")
 
-    # Node.js setup for static sites
+    # Node.js setup for static sites (pnpm must be installed BEFORE setup-node
+    # because setup-node auto-detects packageManager from package.json)
     if profile.needs_node and not profile.needs_docker:
-        lines.append("      - uses: actions/setup-node@v5")
-        lines.append("        with: { node-version: '22' }")
         lines.append("      - uses: pnpm/action-setup@v4")
         lines.append("        with: { version: 9 }")
+        lines.append("      - uses: actions/setup-node@v5")
+        lines.append("        with: { node-version: '22', cache: 'pnpm' }")
 
     lines.append("      - uses: actions/setup-python@v5")
     lines.append("        with: { python-version: '3.11' }")
