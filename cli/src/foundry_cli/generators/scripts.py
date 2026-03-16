@@ -540,7 +540,7 @@ def resolve_profile(
     if deploy.secrets:
         secrets = deploy.secrets
     else:
-        secrets = _default_secrets(kind, type_, role, name, strategy, structure)
+        secrets = _default_secrets(kind, type_, role, name, strategy, structure, dockerfile)
 
     if deploy.cdn is not None:
         cdn = deploy.cdn
@@ -584,33 +584,44 @@ def resolve_profile(
 def _default_secrets(
     kind: str, type_: str | None, role: str | None,
     name: str, strategy: str, structure: StructureConfig,
+    dockerfile: str | None = None,
 ) -> tuple[SecretMapping, ...]:
     if strategy == "none":
         return ()
     apps_dir = structure.apps_dir
     secrets: list[SecretMapping] = []
+
+    # Derive service folder from dockerfile path (handles mismatches like
+    # service "microlith" with folder "platform-microlith"). Falls back to
+    # service name if no dockerfile is specified.
+    if dockerfile:
+        from pathlib import PurePosixPath
+        service_folder = PurePosixPath(dockerfile).parent.name
+    else:
+        service_folder = name
+
     if type_ == "spring-boot":
         secrets.append(SecretMapping(
             source="{{prefix}}-{{env}}/{{service}}-spring-properties",
-            target=f"{{apps_dir}}/backend/{{{{service}}}}/src/main/resources/application-{{{{env}}}}.yml",
+            target=f"{{apps_dir}}/backend/{{service_folder}}/src/main/resources/application-{{{{env}}}}.yml",
             optional=True,
         ))
         if role == "auth":
             secrets.append(SecretMapping(
                 source="{{prefix}}-{{env}}/efga-spring-properties",
-                target=f"{{apps_dir}}/backend/{{{{service}}}}/src/main/resources/efga-{{{{env}}}}.yml",
+                target=f"{{apps_dir}}/backend/{{service_folder}}/src/main/resources/efga-{{{{env}}}}.yml",
                 optional=True,
             ))
     elif type_ in ("uvicorn", "gunicorn", "flask", "django"):
         secrets.append(SecretMapping(
             source="{{prefix}}-{{env}}/{{service}}-env",
-            target=f"{{apps_dir}}/backend/{{{{service}}}}/.env",
+            target=f"{{apps_dir}}/backend/{{service_folder}}/.env",
             optional=True,
         ))
     elif kind == "frontend" and strategy != "static":
         secrets.append(SecretMapping(
             source="{{prefix}}-{{env}}/{{service}}-env",
-            target=f"{{apps_dir}}/frontend/{{{{service}}}}/.env.production",
+            target=f"{{apps_dir}}/frontend/{{service_folder}}/.env.production",
             optional=True,
         ))
     return tuple(secrets)
@@ -801,9 +812,10 @@ class EcsEngine:
             "-t", image_uri,
             "--push",
             # GHA cache for BuildKit cache mounts (Maven .m2, npm, etc.)
-            "--cache-from", "type=gha",
-            "--cache-to", "type=gha,mode=max",
-            # Registry cache for Docker layers
+            # Scope per service to prevent cross-service eviction
+            "--cache-from", f"type=gha,scope={{self.profile.name}}",
+            "--cache-to", f"type=gha,scope={{self.profile.name}},mode=max",
+            # Registry cache for Docker layers (fallback if GHA cache misses)
             "--cache-from", f"type=registry,ref={{repo_uri}}:buildcache",
             "--cache-to", f"type=registry,ref={{repo_uri}}:buildcache,mode=max",
         ]
@@ -917,7 +929,11 @@ class EcsEngine:
             if sc_config.command:
                 sidecar["command"] = list(sc_config.command)
             if sc_config.environment:
-                sidecar["environment"] = [{{"name": k, "value": v}} for k, v in sc_config.environment.items()]
+                sc_env = dict(sc_config.environment)
+                # Resolve placeholder datastore URIs from database credentials
+                if sc_env.get("OPENFGA_DATASTORE_URI", "").startswith("placeholder://"):
+                    sc_env["OPENFGA_DATASTORE_URI"] = self._resolve_datastore_uri(svc)
+                sidecar["environment"] = [{{"name": k, "value": v}} for k, v in sc_env.items()]
             containers.append(sidecar)
 
         task_def: dict[str, Any] = {{
@@ -971,6 +987,25 @@ class EcsEngine:
     def _get_ecr_repo_uri(self, ecr_client: Any, repo_name: str) -> str:
         response = ecr_client.describe_repositories(repositoryNames=[repo_name])
         return response["repositories"][0]["repositoryUri"]
+
+    def _resolve_datastore_uri(self, service_name: str) -> str:
+        """Resolve OpenFGA datastore URI from database credentials secret."""
+        from urllib.parse import quote_plus
+        secret_id = f"{{self.prefix}}-{{self.env}}/{{service_name}}/credentials"
+        sm_client = self.session.client("secretsmanager")
+        try:
+            resp = sm_client.get_secret_value(SecretId=secret_id)
+            creds = json.loads(resp["SecretString"])
+            # Build postgres URI: postgres://user:pass@host:port/dbname?sslmode=require
+            user = quote_plus(creds["username"])
+            password = quote_plus(creds["password"])
+            host = creds["host"]
+            port = creds.get("port", 5432)
+            dbname = creds["dbname"]
+            return f"postgres://{{user}}:{{password}}@{{host}}:{{port}}/{{dbname}}?sslmode=require"
+        except Exception as e:
+            logger.warning(f"⚠️ Could not resolve datastore URI from {{secret_id}}: {{e}}")
+            raise ValueError(f"Failed to resolve datastore URI for {{service_name}}: {{e}}")
 
     def _ecr_login(self, ecr_client: Any) -> None:
         token_resp = ecr_client.get_authorization_token()
