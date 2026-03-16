@@ -808,9 +808,9 @@ class EcsEngine:
             "--cache-to", f"type=registry,ref={{repo_uri}}:buildcache,mode=max",
         ]
 
-        # Pass PACKAGES_READ_TOKEN as GITHUB_TOKEN secret for GitHub Packages auth
-        if os.environ.get("PACKAGES_READ_TOKEN"):
-            build_args.extend(["--secret", "id=GITHUB_TOKEN,env=PACKAGES_READ_TOKEN"])
+        # Pass GITHUB_TOKEN as Docker secret for GitHub Packages auth
+        if os.environ.get("GITHUB_TOKEN"):
+            build_args.extend(["--secret", "id=GITHUB_TOKEN,env=GITHUB_TOKEN"])
 
         build_args.append(str(self.profile.build_context))
 
