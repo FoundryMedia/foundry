@@ -1534,7 +1534,8 @@ def generate_tfvars_json(
 
     # -- Services from secret config --------------------------------------
     secret_services: dict[str, Any] = iac_config.get("services", {{}})
-    raw_services: dict[str, Any] = manifest.services if hasattr(manifest, "services") else {{}}
+    # Use raw service dicts from manifest.data, not ServiceConfig objects
+    raw_services: dict[str, Any] = manifest.data.get("services", {{}}) if hasattr(manifest, "data") else {{}}
 
     # -- ECS services -----------------------------------------------------
     ecs_services: dict[str, dict[str, Any]] = {{}}
