@@ -766,6 +766,23 @@ class EcsEngine:
         self.prefix = prefix
         self.session = session
         self.iac_outputs = self._load_iac_outputs()
+        self._manifest = self._load_manifest()
+
+    def _load_manifest(self) -> dict[str, Any]:
+        """Load foundry.json manifest for service configuration."""
+        manifest_path = Path("foundry.json")
+        if manifest_path.exists():
+            return json.loads(manifest_path.read_text(encoding="utf-8"))
+        return {{}}
+
+    def _get_database_schema(self, service_name: str) -> str | None:
+        """Get the database schema for a service from the manifest."""
+        services = self._manifest.get("services", {{}})
+        svc_config = services.get(service_name, {{}})
+        db_config = svc_config.get("database")
+        if isinstance(db_config, dict):
+            return db_config.get("schema")
+        return None
 
     def build_and_push(self) -> str:
         """Build Docker image and push to ECR.  Returns the full image URI."""
@@ -932,7 +949,8 @@ class EcsEngine:
                 sc_env = dict(sc_config.environment)
                 # Resolve placeholder datastore URIs from database credentials
                 if sc_env.get("OPENFGA_DATASTORE_URI", "").startswith("placeholder://"):
-                    sc_env["OPENFGA_DATASTORE_URI"] = self._resolve_datastore_uri(svc)
+                    db_schema = self._get_database_schema(svc)
+                    sc_env["OPENFGA_DATASTORE_URI"] = self._resolve_datastore_uri(svc, db_schema)
                 sidecar["environment"] = [{{"name": k, "value": v}} for k, v in sc_env.items()]
             containers.append(sidecar)
 
@@ -988,8 +1006,13 @@ class EcsEngine:
         response = ecr_client.describe_repositories(repositoryNames=[repo_name])
         return response["repositories"][0]["repositoryUri"]
 
-    def _resolve_datastore_uri(self, service_name: str) -> str:
-        """Resolve OpenFGA datastore URI from database credentials secret."""
+    def _resolve_datastore_uri(self, service_name: str, schema: str | None = None) -> str:
+        """Resolve OpenFGA datastore URI from database credentials secret.
+
+        Args:
+            service_name: The service name to fetch credentials for.
+            schema: Optional PostgreSQL schema name to set as search_path.
+        """
         from urllib.parse import quote_plus
         secret_id = f"{{self.prefix}}-{{self.env}}/{{service_name}}/credentials"
         sm_client = self.session.client("secretsmanager")
@@ -1002,7 +1025,10 @@ class EcsEngine:
             host = creds["host"]
             port = creds.get("port", 5432)
             dbname = creds["dbname"]
-            return f"postgres://{{user}}:{{password}}@{{host}}:{{port}}/{{dbname}}?sslmode=require"
+            uri = f"postgres://{{user}}:{{password}}@{{host}}:{{port}}/{{dbname}}?sslmode=require"
+            if schema:
+                uri += f"&search_path={{schema}}"
+            return uri
         except Exception as e:
             logger.warning(f"⚠️ Could not resolve datastore URI from {{secret_id}}: {{e}}")
             raise ValueError(f"Failed to resolve datastore URI for {{service_name}}: {{e}}")
@@ -1371,6 +1397,65 @@ def _resolve_hosted_zone_id(session: Any, domain_name: str) -> str:
     return ""
 
 
+# -- Port Derivation from Manifest ----------------------------------------
+
+
+def _inject_manifest_ports(
+    svc_iac: dict[str, Any],
+    manifest_service: dict[str, Any],
+) -> dict[str, Any]:
+    """Inject container_port and health_check_port from manifest run config.
+
+    Ports defined in ``foundry.json`` under ``services.{{name}}.run`` are used
+    as defaults for IAC configuration. This allows committing port config to
+    the repository rather than duplicating it in Secrets Manager.
+
+    Priority: IAC secret values > manifest ``run`` config > hardcoded defaults.
+    """
+    result = dict(svc_iac)  # shallow copy
+    run_cfg = manifest_service.get("run", {{}})
+
+    # container_port
+    manifest_port = run_cfg.get("port")
+    if manifest_port and "container_port" not in result:
+        result["container_port"] = manifest_port
+        logger.debug("Derived container_port=%d from manifest run.port", manifest_port)
+
+    # health_check_port (in alb block)
+    actuator_port = run_cfg.get("actuatorPort")
+    if actuator_port:
+        alb = result.get("alb", {{}})
+        if isinstance(alb, dict) and "health_check_port" not in alb:
+            result["alb"] = {{**alb, "health_check_port": actuator_port}}
+            logger.debug("Derived alb.health_check_port=%d from manifest run.actuatorPort", actuator_port)
+
+    # security_group ingress port alignment
+    container_port = result.get("container_port")
+    health_port = result.get("alb", {{}}).get("health_check_port") if isinstance(result.get("alb"), dict) else None
+
+    if container_port or health_port:
+        sg = result.get("security_group", {{}})
+        if isinstance(sg, dict) and "ingress" in sg:
+            updated_rules = []
+            for rule in sg.get("ingress", []):
+                if not isinstance(rule, dict):
+                    updated_rules.append(rule)
+                    continue
+                rule = dict(rule)
+                if health_port and rule.get("description", "").lower().startswith("health check"):
+                    if rule.get("from_port") in (9000, 9090, 9091):
+                        rule["from_port"] = health_port
+                        rule["to_port"] = health_port
+                elif container_port and "health" not in rule.get("description", "").lower():
+                    if rule.get("from_port") in (8080, 8081, 8090, 8091):
+                        rule["from_port"] = container_port
+                        rule["to_port"] = container_port
+                updated_rules.append(rule)
+            result["security_group"] = {{**sg, "ingress": updated_rules}}
+
+    return result
+
+
 # -- Main Generator -------------------------------------------------------
 
 
@@ -1449,6 +1534,7 @@ def generate_tfvars_json(
 
     # -- Services from secret config --------------------------------------
     secret_services: dict[str, Any] = iac_config.get("services", {{}})
+    raw_services: dict[str, Any] = manifest.services if hasattr(manifest, "services") else {{}}
 
     # -- ECS services -----------------------------------------------------
     ecs_services: dict[str, dict[str, Any]] = {{}}
@@ -1463,6 +1549,10 @@ def generate_tfvars_json(
                 manifest_name,
             )
             continue
+
+        # Inject ports from manifest run config (avoids duplicating in secret)
+        manifest_svc = raw_services.get(manifest_name, {{}})
+        svc_iac = _inject_manifest_ports(svc_iac, manifest_svc)
 
         iac_key = _iac_service_name(manifest_name, profile.kind)
         svc_vars: dict[str, str] = {{

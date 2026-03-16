@@ -111,6 +111,11 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("  packages: read")
     lines.append("")
 
+    # Environment — opt into Node.js 24 for all actions
+    lines.append("env:")
+    lines.append("  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true")
+    lines.append("")
+
     # ── detect-changes job ──
     lines.append("jobs:")
     lines.append("  detect-changes:")
@@ -120,10 +125,10 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("      environment: ${{ steps.detect.outputs.environment }}")
     lines.append("      has_db_changes: ${{ steps.detect.outputs.has_db_changes }}")
     lines.append("    steps:")
-    lines.append("      - uses: actions/checkout@v4")
+    lines.append("      - uses: actions/checkout@v5")
     lines.append("        with:")
     lines.append("          fetch-depth: 0")
-    lines.append("      - uses: actions/setup-python@v4")
+    lines.append("      - uses: actions/setup-python@v5")
     lines.append("        with:")
     lines.append("          python-version: '3.11'")
     lines.append("      - run: pip install -r ci/scripts/requirements.txt")
@@ -143,8 +148,8 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("    runs-on: ubuntu-latest")
     lines.append("    environment: ${{ needs.detect-changes.outputs.environment }}")
     lines.append("    steps:")
-    lines.append("      - uses: actions/checkout@v4")
-    lines.append("      - uses: actions/setup-python@v4")
+    lines.append("      - uses: actions/checkout@v5")
+    lines.append("      - uses: actions/setup-python@v5")
     lines.append("        with: { python-version: '3.11' }")
     _append_iac_setup(lines, iac_tool)
     lines.append("      - uses: aws-actions/configure-aws-credentials@v4")
@@ -172,10 +177,10 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
         lines.append("    runs-on: ubuntu-latest")
         lines.append("    environment: ${{ needs.detect-changes.outputs.environment }}")
         lines.append("    steps:")
-        lines.append("      - uses: actions/checkout@v4")
+        lines.append("      - uses: actions/checkout@v5")
         lines.append("      - uses: actions/download-artifact@v4")
         lines.append("        with: { name: iac-outputs, path: iac-outputs/ }")
-        lines.append("      - uses: actions/setup-python@v4")
+        lines.append("      - uses: actions/setup-python@v5")
         lines.append("        with: { python-version: '3.11' }")
         lines.append("      - uses: aws-actions/configure-aws-credentials@v4")
         lines.append("        with:")
@@ -234,7 +239,7 @@ def _append_service_job(
     lines.append("    runs-on: ubuntu-latest")
     lines.append("    environment: ${{ needs.detect-changes.outputs.environment }}")
     lines.append("    steps:")
-    lines.append("      - uses: actions/checkout@v4")
+    lines.append("      - uses: actions/checkout@v5")
     lines.append("      - uses: actions/download-artifact@v4")
     lines.append("        with: { name: iac-outputs, path: iac-outputs/ }")
 
@@ -244,12 +249,12 @@ def _append_service_job(
 
     # Node.js setup for static sites
     if profile.needs_node and not profile.needs_docker:
-        lines.append("      - uses: actions/setup-node@v4")
-        lines.append("        with: { node-version: '20' }")
-        lines.append("      - uses: pnpm/action-setup@v2")
+        lines.append("      - uses: actions/setup-node@v5")
+        lines.append("        with: { node-version: '22' }")
+        lines.append("      - uses: pnpm/action-setup@v4")
         lines.append("        with: { version: 9 }")
 
-    lines.append("      - uses: actions/setup-python@v4")
+    lines.append("      - uses: actions/setup-python@v5")
     lines.append("        with: { python-version: '3.11' }")
     lines.append("      - uses: aws-actions/configure-aws-credentials@v4")
     lines.append("        with:")

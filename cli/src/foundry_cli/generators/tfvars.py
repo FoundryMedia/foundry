@@ -237,6 +237,81 @@ def _build_name_map(
     return name_map
 
 
+# ── Port Derivation from Manifest ────────────────────────────────────────
+
+
+def _inject_manifest_ports(
+    svc_iac: dict[str, Any],
+    manifest_service: dict[str, Any],
+) -> dict[str, Any]:
+    """Inject container_port and health_check_port from manifest run config.
+
+    Ports defined in ``foundry.json`` under ``services.{name}.run`` are used
+    as defaults for IAC configuration. This allows committing port config to
+    the repository rather than duplicating it in Secrets Manager.
+
+    Priority: IAC secret values > manifest ``run`` config > hardcoded defaults.
+
+    Args:
+        svc_iac: The IAC config dict for this service (from secret or inline).
+        manifest_service: The raw service config from ``foundry.json``.
+
+    Returns:
+        A new dict with ports injected where missing.
+    """
+    result = dict(svc_iac)  # shallow copy
+    run_cfg = manifest_service.get("run", {})
+
+    # ── container_port ───────────────────────────────────────────────────
+    manifest_port = run_cfg.get("port")
+    if manifest_port and "container_port" not in result:
+        result["container_port"] = manifest_port
+        logger.debug(
+            "Derived container_port=%d from manifest run.port",
+            manifest_port,
+        )
+
+    # ── health_check_port (in alb block) ─────────────────────────────────
+    actuator_port = run_cfg.get("actuatorPort")
+    if actuator_port:
+        alb = result.get("alb", {})
+        if isinstance(alb, dict) and "health_check_port" not in alb:
+            result["alb"] = {**alb, "health_check_port": actuator_port}
+            logger.debug(
+                "Derived alb.health_check_port=%d from manifest run.actuatorPort",
+                actuator_port,
+            )
+
+    # ── security_group ingress port alignment ────────────────────────────
+    # If ports were derived, update security group rules that use default ports
+    container_port = result.get("container_port")
+    health_port = result.get("alb", {}).get("health_check_port") if isinstance(result.get("alb"), dict) else None
+
+    if container_port or health_port:
+        sg = result.get("security_group", {})
+        if isinstance(sg, dict) and "ingress" in sg:
+            updated_rules = []
+            for rule in sg.get("ingress", []):
+                if not isinstance(rule, dict):
+                    updated_rules.append(rule)
+                    continue
+                rule = dict(rule)  # shallow copy
+                # Update health check rules (typically port 9000 -> actuatorPort)
+                if health_port and rule.get("description", "").lower().startswith("health check"):
+                    if rule.get("from_port") in (9000, 9090, 9091):
+                        rule["from_port"] = health_port
+                        rule["to_port"] = health_port
+                # Update app traffic rules (typically port 8080 -> container_port)
+                elif container_port and "health" not in rule.get("description", "").lower():
+                    if rule.get("from_port") in (8080, 8081, 8090, 8091):
+                        rule["from_port"] = container_port
+                        rule["to_port"] = container_port
+                updated_rules.append(rule)
+            result["security_group"] = {**sg, "ingress": updated_rules}
+
+    return result
+
+
 # ── Reference & Template Resolution ─────────────────────────────────────
 
 
@@ -549,6 +624,10 @@ def generate_tfvars(
                 manifest_name,
             )
             continue
+
+        # Inject ports from manifest run config (avoids duplicating in secret)
+        manifest_svc = raw_services.get(manifest_name, {})
+        svc_iac = _inject_manifest_ports(svc_iac, manifest_svc)
 
         iac_key = iac_service_name(manifest_name, profile.kind)
 
