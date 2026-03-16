@@ -875,8 +875,9 @@ class EcsEngine:
         elif isinstance(tf_env, list):
             env_vars.extend(tf_env)
 
+        # Use iac_key for container name to match IaC target group configuration
         main_container = {{
-            "name": svc,
+            "name": iac_key,
             "image": image_uri,
             "essential": True,
             "portMappings": [{{"containerPort": container_port, "protocol": "tcp"}}],
