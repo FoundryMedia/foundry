@@ -125,24 +125,49 @@ class SecretMapping:
 
 
 @dataclass(frozen=True)
+class SidecarHealthCheck:
+    """ECS container health check configuration."""
+    command: str
+    interval: int = 30
+    timeout: int = 5
+    retries: int = 3
+    start_period: int = 60
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "SidecarHealthCheck":
+        return cls(
+            command=data["command"],
+            interval=data.get("interval", 30),
+            timeout=data.get("timeout", 5),
+            retries=data.get("retries", 3),
+            start_period=data.get("startPeriod", 60),
+        )
+
+
+@dataclass(frozen=True)
 class SidecarDeployConfig:
     """ECS sidecar container configuration."""
     image: str
     port: int | None = None
     cpu: int = 128
     memory: int = 256
+    essential: bool = False
     command: tuple[str, ...] = field(default_factory=tuple)
     environment: dict[str, str] = field(default_factory=dict)
+    health_check: SidecarHealthCheck | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SidecarDeployConfig":
+        hc_data = data.get("healthCheck")
         return cls(
             image=data["image"],
             port=data.get("port"),
             cpu=data.get("cpu", 128),
             memory=data.get("memory", 256),
+            essential=data.get("essential", False),
             command=tuple(data.get("command", [])),
             environment=dict(data.get("environment", {{}})),
+            health_check=SidecarHealthCheck.from_dict(hc_data) if hc_data else None,
         )
 
 
@@ -409,6 +434,7 @@ from core.manifest_reader import (
     SecretMapping,
     ServiceConfig,
     SidecarDeployConfig,
+    SidecarHealthCheck,
     StructureConfig,
 )
 
@@ -928,7 +954,7 @@ class EcsEngine:
             sidecar = {{
                 "name": sc_name,
                 "image": sc_config.image,
-                "essential": False,
+                "essential": sc_config.essential,
                 "cpu": sc_config.cpu,
                 "memory": sc_config.memory,
                 "memoryReservation": sc_config.cpu,
@@ -945,6 +971,14 @@ class EcsEngine:
                 sidecar["portMappings"] = [{{"containerPort": sc_config.port, "protocol": "tcp"}}]
             if sc_config.command:
                 sidecar["command"] = list(sc_config.command)
+            if sc_config.health_check:
+                sidecar["healthCheck"] = {{
+                    "command": ["CMD-SHELL", sc_config.health_check.command],
+                    "interval": sc_config.health_check.interval,
+                    "timeout": sc_config.health_check.timeout,
+                    "retries": sc_config.health_check.retries,
+                    "startPeriod": sc_config.health_check.start_period,
+                }}
             if sc_config.environment:
                 sc_env = dict(sc_config.environment)
                 # Resolve placeholder datastore URIs from database credentials
@@ -1349,17 +1383,35 @@ def _resolve_refs(value: Any, name_map: dict[str, str]) -> Any:
 
 
 def _fetch_iac_config(session: Any, secret_id: str) -> dict[str, Any]:
-    """Fetch the IAC config JSON from Secrets Manager."""
-    client = session.client("secretsmanager")
-    logger.info("Fetching IAC config from secret: %s", secret_id)
-    response = client.get_secret_value(SecretId=secret_id)
-    config = json.loads(response["SecretString"])
-    logger.info(
-        "Loaded IAC config: %d top-level keys, %d service configs",
-        len(config),
-        len(config.get("services", {{}})),
-    )
-    return config
+    """Fetch the IAC config JSON from Secrets Manager.
+
+    Returns an empty dict if the secret cannot be loaded, allowing
+    downstream code to fall back to foundry.json defaults.
+    """
+    try:
+        client = session.client("secretsmanager")
+        logger.info("Fetching IAC config from secret: %s", secret_id)
+        response = client.get_secret_value(SecretId=secret_id)
+        secret_str = response["SecretString"]
+        # Strip UTF-8 BOM if present (can sneak in from editors/copy-paste)
+        if secret_str.startswith("\\xef\\xbb\\xbf"):
+            secret_str = secret_str[3:]
+        config = json.loads(secret_str)
+        logger.info(
+            "Loaded IAC config: %d top-level keys, %d service configs",
+            len(config),
+            len(config.get("services", {{}})),
+        )
+        return config
+    except client.exceptions.ResourceNotFoundException:
+        logger.warning("IAC config secret '%s' not found — using foundry.json defaults", secret_id)
+        return {{}}
+    except json.JSONDecodeError as exc:
+        logger.warning("IAC config secret '%s' is not valid JSON: %s — using foundry.json defaults", secret_id, exc)
+        return {{}}
+    except Exception as exc:
+        logger.warning("Could not fetch IAC config from '%s': %s — using foundry.json defaults", secret_id, exc)
+        return {{}}
 
 
 def _resolve_account_id(session: Any) -> str:
@@ -1452,6 +1504,41 @@ def _inject_manifest_ports(
                         rule["to_port"] = container_port
                 updated_rules.append(rule)
             result["security_group"] = {{**sg, "ingress": updated_rules}}
+
+    return result
+
+
+def _inject_manifest_compute(
+    svc_iac: dict[str, Any],
+    manifest_service: dict[str, Any],
+) -> dict[str, Any]:
+    """Inject cpu and memory from manifest deploy.compute config.
+
+    Compute resources defined in ``foundry.json`` under
+    ``services.{{name}}.deploy.compute`` are used as defaults for IAC
+    configuration. This allows committing resource sizing to the repository
+    rather than duplicating it in Secrets Manager.
+
+    Priority: IAC secret values > manifest ``deploy.compute`` > hardcoded defaults.
+    """
+    result = dict(svc_iac)  # shallow copy
+    deploy_cfg = manifest_service.get("deploy", {{}})
+    compute = deploy_cfg.get("compute", {{}})
+
+    if not compute:
+        return result
+
+    # cpu
+    manifest_cpu = compute.get("cpu")
+    if manifest_cpu and "cpu" not in result:
+        result["cpu"] = manifest_cpu
+        logger.debug("Derived cpu=%d from manifest deploy.compute.cpu", manifest_cpu)
+
+    # memory
+    manifest_memory = compute.get("memory")
+    if manifest_memory and "memory" not in result:
+        result["memory"] = manifest_memory
+        logger.debug("Derived memory=%d from manifest deploy.compute.memory", manifest_memory)
 
     return result
 
@@ -1554,6 +1641,9 @@ def generate_tfvars_json(
         # Inject ports from manifest run config (avoids duplicating in secret)
         manifest_svc = raw_services.get(manifest_name, {{}})
         svc_iac = _inject_manifest_ports(svc_iac, manifest_svc)
+
+        # Inject compute resources from manifest deploy.compute
+        svc_iac = _inject_manifest_compute(svc_iac, manifest_svc)
 
         iac_key = _iac_service_name(manifest_name, profile.kind)
         svc_vars: dict[str, str] = {{
@@ -2276,11 +2366,14 @@ def detect_changes(
         logger.info("🏗️ IaC changes detected — all services will deploy")
         affected = [n for n, p in profiles.items() if p.is_deployable]
 
-    # Check for database changes
+    # Check for database changes — either changelog files changed directly,
+    # or an affected service has a database (e.g. IaC changes force all deploys)
     db_paths = [db.get("changelog", "").rsplit("/", 1)[0] for db in manifest.databases.values()]
     has_db_changes = any(
         any(f.startswith(dp) for dp in db_paths if dp)
         for f in changed_files
+    ) or any(
+        profiles.get(s) and profiles[s].database for s in affected
     )
 
     logger.info(f"🎯 Affected services: {{affected}}")

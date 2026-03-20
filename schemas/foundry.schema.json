@@ -1,5 +1,5 @@
 {
-  "$id": "https://foundry-dev.com/schemas/foundry.schema.json",
+  "$id": "https://raw.githubusercontent.com/FoundryMedia/foundry/release/foundry.schema.json",
   "$schema": "http://json-schema.org/draft-07/schema#",
 
   "title": "Foundry Platform Manifest",
@@ -267,6 +267,11 @@
           "description": "Maven groupId or npm scope for published packages.",
           "type": "string"
         },
+        "packagesSecret": {
+          "description": "Name of the GitHub Actions secret containing a PAT with read:packages scope for cross-repo access.",
+          "type": "string",
+          "default": "PACKAGES_READ_TOKEN"
+        },
         "modules": {
           "description": "Map of logical module names to their artifact coordinates.",
           "type": "object",
@@ -392,6 +397,10 @@
             "$ref": "#/definitions/secretMapping"
           }
         },
+        "compute": {
+          "description": "Compute resources for the main container. IAC secret values override these if present.",
+          "$ref": "#/definitions/computeConfig"
+        },
         "cdn": {
           "description": "CDN (CloudFront) configuration. true = auto (read distribution ID from IaC outputs), false = none, object = custom config. Convention: true for s3-static, true for nextjs ECS, false for backend.",
           "oneOf": [
@@ -486,6 +495,11 @@
           "type": "integer",
           "default": 256
         },
+        "essential": {
+          "description": "Whether the task should stop if this sidecar dies. Default: false.",
+          "type": "boolean",
+          "default": false
+        },
         "command": {
           "description": "Command override for the sidecar container.",
           "type": "array",
@@ -495,6 +509,61 @@
           "description": "Environment variables for the sidecar container.",
           "type": "object",
           "additionalProperties": { "type": "string" }
+        },
+        "healthCheck": {
+          "description": "ECS container health check configuration.",
+          "$ref": "#/definitions/containerHealthCheck"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "containerHealthCheck": {
+      "type": "object",
+      "description": "ECS container health check configuration.",
+      "required": ["command"],
+      "properties": {
+        "command": {
+          "description": "Shell command to run for health check (will be wrapped in CMD-SHELL).",
+          "type": "string"
+        },
+        "interval": {
+          "description": "Seconds between health checks. Default: 30.",
+          "type": "integer",
+          "default": 30
+        },
+        "timeout": {
+          "description": "Seconds before health check times out. Default: 5.",
+          "type": "integer",
+          "default": 5
+        },
+        "retries": {
+          "description": "Number of retries before marking unhealthy. Default: 3.",
+          "type": "integer",
+          "default": 3
+        },
+        "startPeriod": {
+          "description": "Grace period (seconds) before health checks start. Default: 60.",
+          "type": "integer",
+          "default": 60
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "computeConfig": {
+      "type": "object",
+      "description": "Compute resource allocation for a container. CPU units follow AWS ECS conventions (1024 = 1 vCPU). Memory is in MiB.",
+      "properties": {
+        "cpu": {
+          "description": "CPU units for the container. 256 = 0.25 vCPU, 512 = 0.5 vCPU, 1024 = 1 vCPU, 2048 = 2 vCPU, 4096 = 4 vCPU.",
+          "type": "integer",
+          "default": 256
+        },
+        "memory": {
+          "description": "Memory (MiB) for the container. Must be compatible with CPU allocation per AWS Fargate limits.",
+          "type": "integer",
+          "default": 512
         }
       },
       "additionalProperties": false
@@ -606,36 +675,6 @@
         "healthCheck": {
           "description": "Health check endpoint path for local development (e.g., '/actuator/health').",
           "type": "string"
-        },
-        "debug": {
-          "description": "Remote debugger configuration for local development. Enables IDE debugger attachment. Can be an integer (port only, suspend=false) or an object with port and suspend options.",
-          "oneOf": [
-            {
-              "type": "integer",
-              "description": "Debug port. The service will start with a remote debugger listening on this port (suspend=false).",
-              "minimum": 1024,
-              "maximum": 65535
-            },
-            {
-              "type": "object",
-              "description": "Debug configuration object.",
-              "required": ["port"],
-              "properties": {
-                "port": {
-                  "description": "Port for the remote debugger to listen on.",
-                  "type": "integer",
-                  "minimum": 1024,
-                  "maximum": 65535
-                },
-                "suspend": {
-                  "description": "Whether the JVM should wait for a debugger to attach before starting. Default: false.",
-                  "type": "boolean",
-                  "default": false
-                }
-              },
-              "additionalProperties": false
-            }
-          ]
         }
       },
       "additionalProperties": false
