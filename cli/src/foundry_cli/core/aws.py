@@ -295,6 +295,9 @@ def get_secret_json(
         Parsed JSON dict from the secret value.
     """
     raw = get_secret_value(secret_id, region=region)
+    # Strip UTF-8 BOM if present (can sneak in from editors/copy-paste)
+    if raw.startswith("\xef\xbb\xbf"):
+        raw = raw[3:]
     try:
         parsed = json.loads(raw)
         if not isinstance(parsed, dict):
