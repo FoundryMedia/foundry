@@ -2208,15 +2208,30 @@ class DatabaseEngine:
         # Pick a local port for the tunnel
         local_port = self._find_free_port()
 
-        # Open SSH tunnel
-        tunnel = self._open_tunnel(
-            bastion_ip=bastion_ip,
-            bastion_user="ec2-user",
-            key_file=key_file,
-            remote_host=remote_host,
-            remote_port=remote_port,
-            local_port=local_port,
-        )
+        # Open SSH tunnel (retry up to 3 times — first attempt frequently fails in CI)
+        tunnel = None
+        max_tunnel_retries = 3
+        for tunnel_attempt in range(1, max_tunnel_retries + 1):
+            try:
+                tunnel = self._open_tunnel(
+                    bastion_ip=bastion_ip,
+                    bastion_user="ec2-user",
+                    key_file=key_file,
+                    remote_host=remote_host,
+                    remote_port=remote_port,
+                    local_port=local_port,
+                )
+                break
+            except RuntimeError as e:
+                if tunnel_attempt < max_tunnel_retries:
+                    logger.warning(
+                        f"SSH tunnel attempt {{tunnel_attempt}}/{{max_tunnel_retries}} failed: {{e}} — retrying in 5s"
+                    )
+                    time.sleep(5)
+                    # Pick a new port in case the old one is stuck
+                    local_port = self._find_free_port()
+                else:
+                    raise
         if tunnel:
             self._tunnels.append(tunnel)
 

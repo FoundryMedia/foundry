@@ -152,7 +152,7 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("      - uses: actions/setup-python@v5")
     lines.append("        with: { python-version: '3.11' }")
     _append_iac_setup(lines, iac_tool)
-    lines.append("      - uses: aws-actions/configure-aws-credentials@v4")
+    lines.append("      - uses: aws-actions/configure-aws-credentials@v5")
     lines.append("        with:")
     lines.append("          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GithubActionsRole")
     lines.append("          role-session-name: deploy-iac-${{ github.run_id }}")
@@ -185,7 +185,7 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
         lines.append("        with: { name: iac-outputs, path: iac-outputs/ }")
         lines.append("      - uses: actions/setup-python@v5")
         lines.append("        with: { python-version: '3.11' }")
-        lines.append("      - uses: aws-actions/configure-aws-credentials@v4")
+        lines.append("      - uses: aws-actions/configure-aws-credentials@v5")
         lines.append("        with:")
         lines.append("          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/GithubActionsRole")
         lines.append("          role-session-name: migrate-databases-${{ github.run_id }}")
@@ -213,7 +213,7 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
 def _append_iac_setup(lines: list[str], iac_tool: str) -> None:
     """Append the IaC tool setup step."""
     if iac_tool == "opentofu":
-        lines.append("      - uses: opentofu/setup-opentofu@v1")
+        lines.append("      - uses: opentofu/setup-opentofu@v2")
         lines.append("        with: { tofu_version: '1.9.0' }")
     elif iac_tool == "terraform":
         lines.append("      - uses: hashicorp/setup-terraform@v3")
@@ -259,7 +259,7 @@ def _append_service_job(
 
     lines.append("      - uses: actions/setup-python@v5")
     lines.append("        with: { python-version: '3.11' }")
-    lines.append("      - uses: aws-actions/configure-aws-credentials@v4")
+    lines.append("      - uses: aws-actions/configure-aws-credentials@v5")
     lines.append("        with:")
     lines.append(f"          role-to-assume: arn:aws:iam::${{{{ vars.AWS_ACCOUNT_ID }}}}:role/GithubActionsRole")
     lines.append(f"          role-session-name: deploy-{name}-${{{{ github.run_id }}}}")
