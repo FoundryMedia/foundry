@@ -2486,6 +2486,88 @@ def iac(environment: str, operation: str):
     engine.save_outputs()
 
 
+@cli.command(name="repackage-lambdas")
+@click.option("--iac-dir", default="ci/iac", help="Path to IaC directory")
+def repackage_lambdas(iac_dir: str):
+    """Repackage Lambda functions whose source files are newer than their zip."""
+    import os
+    import subprocess
+    import zipfile
+    from pathlib import Path
+
+    functions_dir = Path(iac_dir) / "modules" / "lambda" / "functions"
+    if not functions_dir.exists():
+        logger.info("No Lambda functions directory found, skipping")
+        return
+
+    repackaged = 0
+    for func_dir in sorted(functions_dir.iterdir()):
+        if not func_dir.is_dir():
+            continue
+
+        # Find the zip file
+        zips = list(func_dir.glob("*.zip"))
+        if not zips:
+            continue
+        zip_path = zips[0]
+        zip_mtime = zip_path.stat().st_mtime
+
+        # Check if any source file is newer than the zip
+        source_exts = {{".py", ".js", ".ts", ".json", ".txt", ".html", ".css"}}
+        needs_repackage = False
+        for src in func_dir.iterdir():
+            if src.suffix in source_exts and src.name != "package.ps1" and src.stat().st_mtime > zip_mtime:
+                needs_repackage = True
+                break
+
+        if not needs_repackage:
+            continue
+
+        logger.info(f"📦 Repackaging {{func_dir.name}}...")
+
+        # Check for requirements.txt — if present, install deps
+        reqs = func_dir / "requirements.txt"
+        build_dir = func_dir / "_build"
+
+        if build_dir.exists():
+            import shutil
+            shutil.rmtree(build_dir)
+        build_dir.mkdir()
+
+        if reqs.exists():
+            subprocess.run(
+                [sys.executable, "-m", "pip", "install", "-r", str(reqs), "-t", str(build_dir), "--quiet"],
+                check=True,
+            )
+
+        # Copy source files
+        for src in func_dir.iterdir():
+            if src.suffix in source_exts and src.name != "package.ps1":
+                import shutil
+                shutil.copy2(src, build_dir / src.name)
+
+        # Create zip
+        zip_path.unlink(missing_ok=True)
+        with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
+            for root, _dirs, files in os.walk(build_dir):
+                for file in files:
+                    file_path = Path(root) / file
+                    arcname = file_path.relative_to(build_dir)
+                    zf.write(file_path, arcname)
+
+        # Clean up
+        import shutil
+        shutil.rmtree(build_dir)
+        size_mb = zip_path.stat().st_size / (1024 * 1024)
+        logger.info(f"   ✅ {{zip_path.name}} ({{size_mb:.2f}} MB)")
+        repackaged += 1
+
+    if repackaged:
+        logger.info(f"📦 Repackaged {{repackaged}} Lambda function(s)")
+    else:
+        logger.info("📦 All Lambda packages are up to date")
+
+
 @cli.command()
 @click.option("--environment", required=True, help="Target environment")
 def migrate(environment: str):
