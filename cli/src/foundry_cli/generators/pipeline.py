@@ -158,6 +158,9 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append("          role-session-name: deploy-iac-${{ github.run_id }}")
     lines.append("          aws-region: ${{ vars.AWS_REGION }}")
     lines.append("      - run: pip install -r ci/scripts/requirements.txt")
+    # Repackage any Lambda functions whose source files changed since the zip was built
+    lines.append("      - name: Repackage Lambda functions")
+    lines.append(f"        run: python3 ci/scripts/deploy.py repackage-lambdas --iac-dir {iac_dir}")
     lines.append("      - run: |")
     lines.append('          python3 ci/scripts/deploy.py iac \\')
     lines.append('            --environment "${{ needs.detect-changes.outputs.environment }}" \\')
