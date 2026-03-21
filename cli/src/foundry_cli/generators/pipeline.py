@@ -165,7 +165,7 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
     lines.append('          python3 ci/scripts/deploy.py iac \\')
     lines.append('            --environment "${{ needs.detect-changes.outputs.environment }}" \\')
     lines.append('            --operation plan-apply')
-    lines.append("      - uses: actions/upload-artifact@v4")
+    lines.append("      - uses: actions/upload-artifact@v5")
     lines.append("        with:")
     lines.append("          name: iac-outputs")
     lines.append("          path: iac-outputs/")
@@ -181,7 +181,7 @@ def generate_pipeline_yaml(manifest: ProjectManifest) -> str:
         lines.append("    environment: ${{ needs.detect-changes.outputs.environment }}")
         lines.append("    steps:")
         lines.append("      - uses: actions/checkout@v5")
-        lines.append("      - uses: actions/download-artifact@v4")
+        lines.append("      - uses: actions/download-artifact@v5")
         lines.append("        with: { name: iac-outputs, path: iac-outputs/ }")
         lines.append("      - uses: actions/setup-python@v5")
         lines.append("        with: { python-version: '3.11' }")
@@ -243,12 +243,12 @@ def _append_service_job(
     lines.append("    environment: ${{ needs.detect-changes.outputs.environment }}")
     lines.append("    steps:")
     lines.append("      - uses: actions/checkout@v5")
-    lines.append("      - uses: actions/download-artifact@v4")
+    lines.append("      - uses: actions/download-artifact@v5")
     lines.append("        with: { name: iac-outputs, path: iac-outputs/ }")
 
     # Docker setup for ECS services
     if profile.needs_docker:
-        lines.append("      - uses: docker/setup-buildx-action@v3")
+        lines.append("      - uses: docker/setup-buildx-action@v4")
 
     # Node.js setup for static sites (pnpm must be installed BEFORE setup-node
     # because setup-node auto-detects packageManager from package.json)
