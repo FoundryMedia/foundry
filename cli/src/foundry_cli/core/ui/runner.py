@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+import re
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -12,6 +13,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual import events
 from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
 from rich.ansi import AnsiDecoder
 from rich.text import Text
@@ -24,10 +26,27 @@ from foundry_cli.core.services.runners.base import (
     ServiceStatus,
     ServiceStatusEvent,
 )
+from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
 
 from foundry_cli.core.util.logger import LogLine, format_log_line
 
 from foundry_cli.release.versioning import get_local_version
+
+
+def _sanitize_id(name: str) -> str:
+    """Sanitize a name to be a valid Textual widget ID.
+    
+    IDs can only contain letters, numbers, underscores, and hyphens,
+    and must not start with a number.
+    """
+    # Replace common separators with hyphens
+    result = name.replace(" ", "-").replace("/", "-").replace(".", "-")
+    # Remove any remaining invalid characters
+    result = re.sub(r"[^a-zA-Z0-9_-]", "", result)
+    # Ensure it doesn't start with a number
+    if result and result[0].isdigit():
+        result = f"s-{result}"
+    return result or "unknown"
 from foundry_cli.release.update_check import check_for_updates
 
 def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
@@ -174,17 +193,14 @@ class ServicesUI(App[None]):
     .svc_row {
         layout: horizontal;
         height: 1;
-        padding: 0 1;
+        padding: 0 1 0 2;
     }
 
     .svc_icon {
-        width: 3;
-        content-align: left middle;
-    }
-
-    /* Wider icon column for ASCII status indicators in non-VSCode terminals */
-    .svc_icon.ascii-mode {
         width: 5;
+        min-width: 5;
+        margin-right: 1;
+        content-align: left middle;
     }
 
     .svc_name {
@@ -230,6 +246,9 @@ class ServicesUI(App[None]):
         # Layout
         Binding("tab", "toggle_fullscreen", "Toggle Sidebar", priority=True),
 
+        # Service control
+        Binding("r", "restart", "Restart"),
+
         # Log scrolling (when log is focused)
         Binding("u", "log_line_up", "Scroll Up"),
         Binding("d", "log_line_down", "Scroll Down"),
@@ -271,9 +290,24 @@ class ServicesUI(App[None]):
         self._focus: str = "list"
         self._is_vscode = os.environ.get("TERM_PROGRAM") == "vscode"
 
+        # Tunnel readiness events — sidecars wait for their parent's tunnel
+        # before starting. The event is set when the parent emits a status
+        # with "tunnel established" in the detail, or immediately if the
+        # parent has no tunnel (no SSH config).
+        self._tunnel_ready: Dict[str, asyncio.Event] = {}
+        for svc in services:
+            if "/" not in svc.name:
+                # Top-level service — create an event for it
+                parent_runner = runners.get(svc.name)
+                evt = asyncio.Event()
+                # If this service has no tunnel wrapper, it's ready immediately
+                if parent_runner is None or not isinstance(parent_runner, TunnelAwareRunner):
+                    evt.set()
+                self._tunnel_ready[svc.name] = evt
+
 
         if self._is_vscode:
-            self._spinner_frames: tuple[str, ...] = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+            self._spinner_frames: tuple[str, ...] = (" ⠋", " ⠙", " ⠹", " ⠸", " ⠼", " ⠴", " ⠦", " ⠧", " ⠇", " ⠏")
         else:
             self._spinner_frames: tuple[str, ...] = (" -", " \\", " |", " /")
         self._spinner_index: int = 0
@@ -286,7 +320,7 @@ class ServicesUI(App[None]):
                 yield Label("↑/↓ Select • → to Interact", id="sidebar_hint")
                 items = []
                 for svc in self._services:
-                    safe_id = f"svc-{svc.name}".replace(" ", "-")
+                    safe_id = f"svc-{_sanitize_id(svc.name)}"
                     display_name = self._display_names.get(svc.name, svc.name)
                     row = Horizontal(
                         Label("", id=f"icon-{safe_id}", classes="svc_icon"),
@@ -295,12 +329,12 @@ class ServicesUI(App[None]):
                     )
                     items.append(ListItem(row, id=safe_id, name=svc.name))
                 yield ListView(*items, id="services")
-            yield RichLog(id="log", highlight=False, markup=False, wrap=False)
+            yield RichLog(id="log", highlight=False, markup=False, wrap=True)
         yield ServicesFooter()
 
 
     def _update_service_label(self, service_name: str) -> None:
-        safe_id = f"svc-{service_name}".replace(" ", "-")
+        safe_id = f"svc-{_sanitize_id(service_name)}"
         try:
             icon_lbl = self.query_one(f"#icon-{safe_id}", Label)
         except Exception:
@@ -313,10 +347,10 @@ class ServicesUI(App[None]):
             icon_lbl.update(frame)
             icon_lbl.styles.color = "#F5F536" if is_selected else "#3B8EEA"
         elif st == ServiceStatus.healthy:
-            icon_lbl.update("✔" if self._is_vscode else "[OK]")
+            icon_lbl.update(" ✔︎" if self._is_vscode else "[OK]")
             icon_lbl.styles.color = "#23D18B"
         elif st == ServiceStatus.failed:
-            icon_lbl.update("✘" if self._is_vscode else "[X]")
+            icon_lbl.update(" ✘︎" if self._is_vscode else "[X]")
             icon_lbl.styles.color = "#F14C4C"
         else:
             icon_lbl.update("?")
@@ -367,13 +401,6 @@ class ServicesUI(App[None]):
     async def on_mount(self) -> None:
         if self._is_vscode:
             self.query_one("#log", RichLog).add_class("vscode-terminal")
-        else:
-            for svc in self._services:
-                safe_id = f"svc-{svc.name}".replace(" ", "-")
-                try:
-                    self.query_one(f"#icon-{safe_id}", Label).add_class("ascii-mode")
-                except Exception:
-                    pass
 
         for svc in self._services:
             self._write_banner_to_service(svc.name)
@@ -383,7 +410,16 @@ class ServicesUI(App[None]):
             if runner is None:
                 continue
 
-            start_task = asyncio.create_task(runner.start())
+            # Sidecars (name = "parent/sidecar") must wait for their
+            # parent service's SSH tunnel before starting.
+            if "/" in svc.name:
+                parent_name = svc.name.split("/", 1)[0]
+                start_task = asyncio.create_task(
+                    self._start_after_tunnel(parent_name, runner)
+                )
+            else:
+                start_task = asyncio.create_task(runner.start())
+
             pump_task = asyncio.create_task(self._pump_runner_events(runner))
             status_task = asyncio.create_task(self._pump_runner_status_events(runner))
             self._runners[svc.name] = ServiceRunnerState(
@@ -446,6 +482,13 @@ class ServicesUI(App[None]):
                 self._apply_status_event(ev)
         except asyncio.CancelledError:
             return
+
+    async def _start_after_tunnel(self, parent_name: str, runner: ServiceRunner) -> None:
+        """Wait for a parent service's SSH tunnel to be established, then start the runner."""
+        evt = self._tunnel_ready.get(parent_name)
+        if evt and not evt.is_set():
+            await evt.wait()
+        await runner.start()
 
     def _render_selected(self) -> None:
         log = self.query_one("#log", RichLog)
@@ -513,6 +556,12 @@ class ServicesUI(App[None]):
         self._status[ev.service_name] = ev.status
         self._update_service_label(ev.service_name)
 
+        # Signal tunnel readiness for sidecar dependency tracking
+        if ev.service_name in self._tunnel_ready and not self._tunnel_ready[ev.service_name].is_set():
+            detail_lower = (ev.detail or "").lower()
+            if "tunnel established" in detail_lower or ev.status in (ServiceStatus.healthy, ServiceStatus.failed):
+                self._tunnel_ready[ev.service_name].set()
+
         if ev.level == "DEBUG" and not self._debug:
             return
 
@@ -529,6 +578,20 @@ class ServicesUI(App[None]):
                 self.query_one("#log", RichLog).write(styled)
             except NoMatches:
                 return
+
+    async def on_event(self, event: events.Event) -> None:
+        """Drop non-left-click mouse events and paste events before dispatch.
+
+        Right/middle-click in some terminals (e.g. VS Code) can trigger
+        @click meta actions on the footer or paste clipboard text, which
+        would inadvertently fire key-bound actions like restart.
+        """
+        if isinstance(event, (events.MouseDown, events.MouseUp, events.Click)):
+            if event.button != 1:
+                return  # swallow the event entirely
+        if isinstance(event, events.Paste):
+            return  # swallow paste — no paste target in this TUI
+        await super().on_event(event)
 
     def on_list_view_selected(self, event: ListView.Selected) -> None:
         item = event.item
@@ -599,6 +662,9 @@ class ServicesUI(App[None]):
             sidebar.add_class("fullscreen")
             log.add_class("fullscreen")
 
+        # Re-render logs after layout updates so wrapping uses new width
+        self.call_after_refresh(self._render_selected)
+
     def action_log_line_up(self) -> None:
         log = self.query_one("#log", RichLog)
         log.scroll_to(y=max(0, log.scroll_y - 1))
@@ -628,6 +694,80 @@ class ServicesUI(App[None]):
 
     def action_log_bottom(self) -> None:
         self.query_one("#log", RichLog).scroll_end(animate=False)
+
+    async def action_restart(self) -> None:
+        """Restart the currently selected service."""
+        if not self._selected:
+            return
+        
+        name = self._selected
+        state = self._runners.get(name)
+        if not state:
+            return
+        
+        # Log restart message
+        restart_msg = Text.from_markup(
+            f"[bold #F5F536]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/] "
+            "[bold #29B8DB]INFO[/] Restarting service..."
+        )
+        self._logs[name].append(restart_msg)
+        self._logs[name].append(Text(""))
+        
+        # Update status to restarting (shows spinner)
+        self._status[name] = ServiceStatus.starting
+        self._update_service_label(name)
+        self._render_selected()
+        
+        # Cancel existing tasks
+        state.pump_task.cancel()
+        state.status_task.cancel()
+        state.start_task.cancel()
+        
+        await asyncio.gather(
+            state.pump_task,
+            state.status_task,
+            state.start_task,
+            return_exceptions=True,
+        )
+        
+        # Stop the runner
+        try:
+            await state.runner.stop()
+        except Exception as e:
+            error_msg = Text.from_markup(
+                f"[bold #F5F536]{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}[/] "
+                f"[bold #F14C4C]ERROR[/] Failed to stop: {e}"
+            )
+            self._logs[name].append(error_msg)
+        
+        # Drain residual log/status events that the old runner may have
+        # enqueued before it was fully stopped, so they don't appear after
+        # the restart message (e.g. a stale "terminated unexpectedly" error).
+        try:
+            while not state.runner._log_queue.empty():
+                state.runner._log_queue.get_nowait()
+            while not state.runner._status_queue.empty():
+                state.runner._status_queue.get_nowait()
+        except Exception:
+            pass
+
+        # Small delay for process cleanup
+        await asyncio.sleep(0.5)
+        
+        # Restart the runner
+        start_task = asyncio.create_task(state.runner.start())
+        pump_task = asyncio.create_task(self._pump_runner_events(state.runner))
+        status_task = asyncio.create_task(self._pump_runner_status_events(state.runner))
+        
+        self._runners[name] = ServiceRunnerState(
+            name=name,
+            runner=state.runner,
+            start_task=start_task,
+            pump_task=pump_task,
+            status_task=status_task,
+        )
+        
+        self._render_selected()
 
     async def action_request_quit(self) -> None:
         """Gracefully shut down all services."""

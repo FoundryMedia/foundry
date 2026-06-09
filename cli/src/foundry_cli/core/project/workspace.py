@@ -1,13 +1,15 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
+import yaml
 
 from foundry_cli.core.errors import FoundryError
 
-from foundry_cli.core.project.manifest import ProjectManifest, ServiceConfig, load_manifest_from_path
+from foundry_cli.core.project.manifest import ProjectManifest, ServiceConfig, SidecarConfig, SshTunnelConfig, load_manifest_from_path
 from foundry_cli.core.project.service_runtime import RuntimeMatch, ServiceRuntime, detect_runtime
+from foundry_cli.core.project.workspace_config import load_workspace_yml
 
 
 @dataclass(frozen=True)
@@ -36,10 +38,20 @@ class DiscoveredService:
     config: ServiceConfig = ServiceConfig()
 
 
+@dataclass(frozen=True)
+class DiscoveredSidecar:
+    """A sidecar service configured within a service's config in foundry.json."""
+    name: str
+    config: SidecarConfig
+    parent_service: str  # Name of the service this sidecar belongs to
+
+
 class ServiceKind(str, Enum):
     frontend = "frontend"
     backend = "backend"
     worker = "worker"
+    sidecar = "sidecar"
+    package = "package"  # Shared workspace package — built locally, not deployed
     unknown = "unknown"
 
 
@@ -68,6 +80,8 @@ def infer_service_kind(services_root: Path, service_dir: Path) -> ServiceKind:
             return ServiceKind.backend
         if head in ("worker", "workers"):
             return ServiceKind.worker
+        if head in ("packages", "libs", "libraries"):
+            return ServiceKind.package
 
     return ServiceKind.unknown
 
@@ -118,13 +132,51 @@ def resolve_services_root(manifest: ProjectManifest) -> Path:
     return root
 
 
-def discover_services(services_root: Path, manifest: ProjectManifest | None = None) -> list[DiscoveredService]:
+def _build_path_to_key_map(
+    workspace_root: Path,
+    path_map: dict[str, str | None],
+) -> dict[str, str]:
+    """Build a reverse lookup from resolved dir path → manifest key.
+
+    ``path_map`` is ``workspace.yml``'s ``services`` section:
+    ``{"microlith": "apps/backend/platform-microlith", ...}``.
+
+    Returns e.g. ``{"platform-microlith": "microlith", ...}``
+    keyed by directory name for fast lookup during discovery.
+    """
+    result: dict[str, str] = {}
+    for manifest_key, rel_path in path_map.items():
+        if rel_path is None:
+            continue
+        # The last segment of the path is the directory name.
+        dir_name = rel_path.rstrip("/").rsplit("/", 1)[-1]
+        result[dir_name] = manifest_key
+    return result
+
+
+def discover_services(
+    services_root: Path,
+    manifest: ProjectManifest | None = None,
+    *,
+    path_to_key: dict[str, str] | None = None,
+) -> list[DiscoveredService]:
     """Discover service folders inside the services root.
 
     Current heuristic: immediate child directories that do not start with '.' or '_'.
 
     If a manifest is provided, service configs from foundry.json are merged in.
+    When ``path_to_key`` is given (built from ``workspace.yml``), directory names
+    are mapped back to manifest keys so that configs (args, ports, etc.) are
+    correctly resolved even when the dir name differs from the manifest key.
     """
+    if path_to_key is None:
+        path_to_key = {}
+
+    def _resolve(dir_name: str) -> tuple[str, ServiceConfig]:
+        """Return (service_name, config) for a discovered directory."""
+        manifest_key = path_to_key.get(dir_name, dir_name)
+        cfg = manifest.get_service_config(manifest_key) if manifest else ServiceConfig()
+        return manifest_key, cfg
 
     services: list[DiscoveredService] = []
     for child in sorted(services_root.iterdir()):
@@ -143,41 +195,199 @@ def discover_services(services_root: Path, manifest: ProjectManifest | None = No
                 n = nested.name
                 if n.startswith(".") or n.startswith("_"):
                     continue
+                svc_name, svc_cfg = _resolve(n)
                 services.append(
                     DiscoveredService(
-                        name=n,
+                        name=svc_name,
                         path=nested,
                         runtime=detect_runtime(nested),
                         kind=infer_service_kind(services_root, nested),
-                        config=manifest.get_service_config(n) if manifest else ServiceConfig(),
+                        config=svc_cfg,
                     )
                 )
             continue
 
+        svc_name, svc_cfg = _resolve(name)
         services.append(
             DiscoveredService(
-                name=name,
+                name=svc_name,
                 path=child,
                 runtime=detect_runtime(child),
                 kind=infer_service_kind(services_root, child),
-                config=manifest.get_service_config(name) if manifest else ServiceConfig(),
+                config=svc_cfg,
             )
         )
     return services
 
 
-def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[FoundryWorkspace, Path, list[DiscoveredService]]:
+def _load_local_config_yml(foundry_dir: Path) -> dict | None:
+    """Load merged Foundry config (defaults, then local overrides).
+
+    Merge precedence:
+      1) ``.foundry/config.defaults.yml`` (committed, team-safe baseline)
+      2) ``.foundry/config.yml`` (gitignored, developer-local overrides)
+
+    This allows teams to share non-sensitive defaults while keeping personal
+    and sensitive settings local.
+    """
+
+    def _load_yaml_object(path: Path) -> dict | None:
+        if not path.exists() or not path.is_file():
+            return None
+        try:
+            raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise FoundryError(f"Could not parse {path}: {e}") from e
+
+        if raw is None:
+            return None
+        if not isinstance(raw, dict):
+            raise FoundryError(f"Invalid {path}: expected a YAML object at the root.")
+        return raw
+
+    def _deep_merge(base: dict, overlay: dict) -> dict:
+        merged = dict(base)
+        for key, value in overlay.items():
+            existing = merged.get(key)
+            if isinstance(existing, dict) and isinstance(value, dict):
+                merged[key] = _deep_merge(existing, value)
+            else:
+                merged[key] = value
+        return merged
+
+    defaults_path = foundry_dir / "config.defaults.yml"
+    local_path = foundry_dir / "config.yml"
+
+    defaults_cfg = _load_yaml_object(defaults_path) or {}
+    local_cfg = _load_yaml_object(local_path) or {}
+
+    if not defaults_cfg and not local_cfg:
+        return None
+
+    return _deep_merge(defaults_cfg, local_cfg)
+
+
+def _apply_local_service_overrides(
+    services: list[DiscoveredService],
+    foundry_dir: Path,
+) -> list[DiscoveredService]:
+    """Apply overrides from ``.foundry/config.defaults.yml`` + ``config.yml``.
+
+    Supported per-service overrides:
+      services.<name>.sshTunnel
+        - dict: full tunnel config
+        - null/false: disable any manifest tunnel
+            services.<name>.run.strictMode
+                - bool: enables/disables strict mode
+                - object: { enabled?: bool, strictHealthPorts?: bool }
+    """
+    local_cfg = _load_local_config_yml(foundry_dir)
+    if not local_cfg:
+        return services
+
+    raw_services = local_cfg.get("services")
+    if raw_services is None:
+        return services
+    if not isinstance(raw_services, dict):
+        raise FoundryError(
+            "Invalid .foundry/config.defaults.yml or .foundry/config.yml: "
+            "'services' must be a mapping."
+        )
+
+    updated: list[DiscoveredService] = []
+    for svc in services:
+        override = raw_services.get(svc.name)
+        if not isinstance(override, dict):
+            updated.append(svc)
+            continue
+
+        cfg = svc.config
+        if "sshTunnel" in override:
+            raw_tunnel = override.get("sshTunnel")
+            if raw_tunnel in (None, False):
+                cfg = replace(cfg, ssh_tunnel=None)
+            elif isinstance(raw_tunnel, dict):
+                cfg = replace(cfg, ssh_tunnel=SshTunnelConfig.from_dict(raw_tunnel))
+            else:
+                raise FoundryError(
+                    f"Invalid .foundry/config.yml for service '{svc.name}': "
+                    "'sshTunnel' must be an object, null, or false."
+                )
+
+        if "run" in override:
+            raw_run = override.get("run")
+            if not isinstance(raw_run, dict):
+                raise FoundryError(
+                    f"Invalid .foundry/config.yml for service '{svc.name}': "
+                    "'run' must be an object."
+                )
+
+            if "strictMode" in raw_run:
+                raw_strict = raw_run.get("strictMode")
+                if isinstance(raw_strict, bool):
+                    cfg = replace(
+                        cfg,
+                        strict_mode_enabled=raw_strict,
+                        strict_health_ports=cfg.strict_health_ports,
+                    )
+                elif isinstance(raw_strict, dict):
+                    strict_enabled = cfg.strict_mode_enabled
+                    strict_health_ports = cfg.strict_health_ports
+
+                    enabled = raw_strict.get("enabled")
+                    strict_health = raw_strict.get("strictHealthPorts")
+
+                    if enabled is not None and not isinstance(enabled, bool):
+                        raise FoundryError(
+                            f"Invalid .foundry/config.yml for service '{svc.name}': "
+                            "run.strictMode.enabled must be boolean."
+                        )
+                    if strict_health is not None and not isinstance(strict_health, bool):
+                        raise FoundryError(
+                            f"Invalid .foundry/config.yml for service '{svc.name}': "
+                            "run.strictMode.strictHealthPorts must be boolean."
+                        )
+
+                    if isinstance(enabled, bool):
+                        strict_enabled = enabled
+                    if isinstance(strict_health, bool):
+                        strict_health_ports = strict_health
+
+                    cfg = replace(
+                        cfg,
+                        strict_mode_enabled=strict_enabled,
+                        strict_health_ports=strict_health_ports,
+                    )
+                else:
+                    raise FoundryError(
+                        f"Invalid .foundry/config.yml for service '{svc.name}': "
+                        "run.strictMode must be a boolean or object."
+                    )
+
+        updated.append(replace(svc, config=cfg))
+
+    return updated
+
+
+def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[FoundryWorkspace, Path, list[DiscoveredService], list[DiscoveredSidecar]]:
     """Load the current workspace and discover local services.
 
-    For non-Node services (Spring Boot, FastAPI), discovers from the apps/ directory.
-    For Node packages, discovers all workspace packages that have the requested npm script.
+    If ``.foundry/workspace.yml`` exists, uses its path map to correctly
+    resolve directory names back to manifest keys (e.g. the directory
+    ``platform-microlith`` maps to the manifest key ``microlith``).  This
+    ensures that launch config (args, ports, env) from ``foundry.json`` is
+    applied to the right service.
+
+    For Node services managed by pnpm/npm, launch configuration comes from
+    ``package.json`` scripts — Foundry only needs the manifest for port
+    overrides and similar settings.
 
     Args:
         start: Starting directory to search from (defaults to CWD)
         command: The npm script to look for (e.g., "dev", "build")
 
     Returns:
-      (workspace, services_root, services)
+      (workspace, services_root, services, sidecars)
     """
     from foundry_cli.core.project.packages import (
         find_packages_with_script,
@@ -189,8 +399,17 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
     services_root = resolve_services_root(manifest)
     workspace_root = manifest_path.parent
 
+    # Load workspace.yml path map for dir-name → manifest-key resolution
+    path_to_key: dict[str, str] = {}
+    foundry_dir = workspace_root / ".foundry"
+    ws_data = load_workspace_yml(foundry_dir)
+    if ws_data and isinstance(ws_data.get("services"), dict):
+        path_to_key = _build_path_to_key_map(workspace_root, ws_data["services"])
+
     # Discover traditional services (Spring Boot, FastAPI, etc.) from apps/
-    traditional_services = discover_services(services_root, manifest)
+    traditional_services = discover_services(
+        services_root, manifest, path_to_key=path_to_key,
+    )
     
     # Filter to only non-Node services (Spring Boot, FastAPI)
     non_node_services = [
@@ -214,8 +433,8 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
                 kind = ServiceKind.frontend
             elif "backend" in parts:
                 kind = ServiceKind.backend
-            elif "packages" in parts:
-                kind = ServiceKind.unknown  # shared packages
+            elif "packages" in parts or "libs" in parts:
+                kind = ServiceKind.package
         except ValueError:
             pass
 
@@ -224,13 +443,19 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
         if "/" in display_name:
             display_name = display_name.split("/")[-1]
 
+        # Resolve manifest key via workspace.yml path map.
+        # Try the directory name first (most reliable), then the package name.
+        # e.g. dir "web" → manifest key "web", even if package.json name is "public".
+        dir_name = pkg.path.name
+        manifest_key = path_to_key.get(dir_name) or path_to_key.get(display_name, display_name)
+
         node_services.append(
             DiscoveredService(
-                name=display_name,
+                name=manifest_key,
                 path=pkg.path,
                 runtime=RuntimeMatch(ServiceRuntime.nextjs, f"package.json: has '{command}' script"),
                 kind=kind,
-                config=manifest.get_service_config(display_name),
+                config=manifest.get_service_config(manifest_key),
             )
         )
 
@@ -240,16 +465,105 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
     # Filter out disabled services
     all_services = [s for s in all_services if s.config.enabled]
 
+    # Apply optional developer-local overrides from .foundry/config.yml
+    all_services = _apply_local_service_overrides(all_services, foundry_dir)
+
+    # Discover sidecars from within service configs
+    sidecars = []
+    for svc in all_services:
+        for sidecar_name, sidecar_config in svc.config.sidecars.items():
+            if sidecar_config.enabled:
+                sidecars.append(DiscoveredSidecar(
+                    name=sidecar_name,
+                    config=sidecar_config,
+                    parent_service=svc.name,
+                ))
+
     ws = FoundryWorkspace(root=workspace_root, manifests=(manifest,))
-    return ws, services_root, all_services
+    return ws, services_root, all_services, sidecars
+
+
+def filter_services(
+    services: list[DiscoveredService],
+    sidecars: list[DiscoveredSidecar],
+    filter_names: list[str],
+    workspace_root: Path,
+) -> tuple[list[DiscoveredService], list[DiscoveredSidecar]]:
+    """Filter services to only those requested, plus their dependencies.
+
+    Automatically includes:
+    - Node workspace package dependencies (transitively from package.json)
+    - Sidecars for any included service
+
+    Args:
+        services: All discovered services
+        sidecars: All discovered sidecars
+        filter_names: Names of services to include (manifest keys)
+        workspace_root: Root directory of the workspace
+
+    Returns:
+        Filtered (services, sidecars) tuple preserving original order
+    """
+    from foundry_cli.core.project.packages import (
+        discover_workspace_packages,
+        get_package_dependencies,
+    )
+
+    svc_by_name = {s.name: s for s in services}
+    svc_by_path = {str(s.path): s for s in services}
+
+    # Start with explicitly requested services
+    included: set[str] = set()
+    for name in filter_names:
+        if name in svc_by_name:
+            included.add(name)
+
+    # Resolve Node workspace dependencies transitively
+    all_packages = discover_workspace_packages(workspace_root)
+    pkg_by_path = {str(pkg.path): pkg for pkg in all_packages}
+
+    queue = list(included)
+    visited: set[str] = set()
+    while queue:
+        svc_name = queue.pop(0)
+        if svc_name in visited:
+            continue
+        visited.add(svc_name)
+
+        svc = svc_by_name.get(svc_name)
+        if svc is None:
+            continue
+
+        # Find the WorkspacePackage for this service by matching paths
+        pkg = pkg_by_path.get(str(svc.path))
+        if pkg is None:
+            continue
+
+        # Get workspace packages this package depends on
+        deps = get_package_dependencies(pkg, all_packages)
+        for dep_pkg in deps:
+            dep_svc = svc_by_path.get(str(dep_pkg.path))
+            if dep_svc and dep_svc.name not in included:
+                included.add(dep_svc.name)
+                queue.append(dep_svc.name)
+
+    # Filter services, preserving original order
+    filtered_services = [s for s in services if s.name in included]
+
+    # Include sidecars only for included services
+    filtered_sidecars = [sc for sc in sidecars if sc.parent_service in included]
+
+    return filtered_services, filtered_sidecars
 
 
 __all__ = [
     "FoundryWorkspace",
     "DiscoveredService",
+    "DiscoveredSidecar",
     "ServiceKind",
     "find_manifest_path",
     "resolve_services_root",
     "discover_services",
     "load_workspace",
+    "filter_services",
 ]

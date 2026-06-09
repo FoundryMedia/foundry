@@ -6,6 +6,7 @@ import socket
 from pathlib import Path
 from typing import Literal
 
+from foundry_cli.core.project.manifest import DebugConfig
 from foundry_cli.core.services.health import HealthCheckConfig, wait_for_http_healthy
 from foundry_cli.core.services.runners.base import ServiceStatus, ServiceStatusEvent
 from foundry_cli.core.services.runners.process import ProcessBackedRunner
@@ -47,17 +48,21 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         debug: bool = False,
         port: int | None = 8080,
         actuator_port: int | None = 9000,
+        strict_health_ports: bool = False,
         dependency_manager: DependencyManager = "maven",
         command: str = "dev",
         args: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
+        debug_config: DebugConfig | None = None,
     ) -> None:
         super().__init__(service, debug=debug, command=command)
         self._port = port
         self._actuator_port = actuator_port
+        self._strict_health_ports = strict_health_ports
         self._dep = dependency_manager
         self._args = args
         self._env = env or {}
+        self._debug_config = debug_config
         self._process_monitor_task: asyncio.Task | None = None
 
     async def start(self) -> None:
@@ -96,9 +101,52 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             return
 
         cmd = [str(mvnw), "-q", "spring-boot:run"]
+
+        # Inject JDWP remote debug agent when debug config is present
+        if self._debug_config is not None:
+            suspend = "y" if self._debug_config.suspend else "n"
+            jdwp_arg = (
+                f"-agentlib:jdwp=transport=dt_socket,server=y,"
+                f"suspend={suspend},address=*:{self._debug_config.port}"
+            )
+            cmd.append(f"-Dspring-boot.run.jvmArguments={jdwp_arg}")
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.starting,
+                    detail=f"Remote debugger listening on port {self._debug_config.port}"
+                           + (" (suspend=y, waiting for debugger)" if self._debug_config.suspend else ""),
+                    level="INFO",
+                )
+            )
+
         if self._args:
-            args_str = ",".join(self._args)
-            cmd.append(f"-Dspring-boot.run.arguments={args_str}")
+            # -D args are Maven system properties (e.g. -Dspring-boot.run.profiles=local)
+            # — pass them directly on the command line.
+            # Everything else is a Spring Boot application argument
+            # — wrap in -Dspring-boot.run.arguments=.
+            maven_props = [a for a in self._args if a.startswith("-D")]
+            app_args = [a for a in self._args if not a.startswith("-D")]
+
+            if self._strict_health_ports:
+                # Enforce configured ports at runtime without editing application.yml.
+                has_server_port_arg = any(a.startswith("--server.port=") for a in app_args)
+                has_mgmt_port_arg = any(a.startswith("--management.server.port=") for a in app_args)
+                if self._port is not None and not has_server_port_arg:
+                    app_args.append(f"--server.port={self._port}")
+                if self._actuator_port is not None and not has_mgmt_port_arg:
+                    app_args.append(f"--management.server.port={self._actuator_port}")
+
+            cmd.extend(maven_props)
+            if app_args:
+                cmd.append(f"-Dspring-boot.run.arguments={' '.join(app_args)}")
+        elif self._strict_health_ports:
+            app_args: list[str] = []
+            if self._port is not None:
+                app_args.append(f"--server.port={self._port}")
+            if self._actuator_port is not None:
+                app_args.append(f"--management.server.port={self._actuator_port}")
+            if app_args:
+                cmd.append(f"-Dspring-boot.run.arguments={' '.join(app_args)}")
 
         run_env = {**os.environ, **self._env} if self._env else None
         proc = await self._spawn(cmd, cwd=self.cwd, env=run_env)
@@ -153,39 +201,71 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                 return  # Process exited, monitor handles status
 
             main_open = _is_port_open(host, port)
-            actuator_open = _is_port_open(host, actuator_port) if actuator_port and actuator_port != port else True
+            actuator_open = _is_port_open(host, actuator_port) if actuator_port and actuator_port != port else main_open
 
-            if not main_open or (actuator_port and not actuator_open):
+            if not main_open:
                 await asyncio.sleep(0.35)
                 continue
 
-            probe_port = actuator_port or port
-            for url, require_up in (
-                (f"http://{host}:{probe_port}/actuator/health", True),
-                (f"http://{host}:{probe_port}/health", True),
-                (f"http://{host}:{probe_port}/", False),
-            ):
-                try:
-                    await wait_for_http_healthy(
-                        HealthCheckConfig(
-                            url=url, timeout_s=5.0, interval_s=1.0,
-                            startup_timeout_s=10.0, require_up_status=require_up,
+            if self._strict_health_ports and actuator_port and actuator_port != port and not actuator_open:
+                await asyncio.sleep(0.35)
+                continue
+
+            # Probe actuator port first (if configured), then fall back to app port.
+            candidate_ports: list[int] = []
+            if self._strict_health_ports:
+                candidate_ports = [actuator_port or port]
+            else:
+                if actuator_port is not None:
+                    candidate_ports.append(actuator_port)
+                if port is not None and port not in candidate_ports:
+                    candidate_ports.append(port)
+
+            for probe_port in candidate_ports:
+                for url, require_up in (
+                    (f"http://{host}:{probe_port}/actuator/health", True),
+                    (f"http://{host}:{probe_port}/health", True),
+                    (f"http://{host}:{probe_port}/", False),
+                ):
+                    try:
+                        await wait_for_http_healthy(
+                            HealthCheckConfig(
+                                url=url, timeout_s=5.0, interval_s=1.0,
+                                startup_timeout_s=10.0, require_up_status=require_up,
+                            )
+                        )
+                    except Exception:
+                        continue
+
+                    if proc.returncode is not None:
+                        return  # Process died during check
+
+                    if (
+                        actuator_port is not None
+                        and actuator_port != port
+                        and probe_port == port
+                        and not actuator_open
+                    ):
+                        await self._status_queue.put(
+                            ServiceStatusEvent(
+                                self.name,
+                                ServiceStatus.starting,
+                                detail=(
+                                    f"Configured actuator port {actuator_port} not reachable; "
+                                    f"using app port {port} for health."
+                                ),
+                                level="WARN",
+                            )
+                        )
+
+                    await self._status_queue.put(
+                        ServiceStatusEvent(
+                            self.name, ServiceStatus.healthy,
+                            detail=f"Healthy: {url}",
+                            level="INFO",
                         )
                     )
-                except Exception:
-                    continue
-
-                if proc.returncode is not None:
-                    return  # Process died during check
-
-                await self._status_queue.put(
-                    ServiceStatusEvent(
-                        self.name, ServiceStatus.healthy,
-                        detail=f"Healthy: {url}",
-                        level="INFO",
-                    )
-                )
-                return
+                    return
 
             await asyncio.sleep(0.35)
 

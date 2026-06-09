@@ -84,7 +84,7 @@ class TunnelAwareRunner(ServiceRunner):
         """Start tunnel first, then the service."""
         cfg = self._tunnel_config
         
-        await self._log(f"[tunnel] Configuring SSH tunnel: localhost:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} via {cfg.user}@{cfg.host}", "INFO")
+        await self._log(f"[tunnel] Configuring SSH tunnel: 0.0.0.0:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} via {cfg.user}@{cfg.host}", "INFO")
         
         # Emit starting status
         await self._combined_status_queue.put(

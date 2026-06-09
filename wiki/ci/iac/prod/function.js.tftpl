@@ -1,0 +1,51 @@
+// CloudFront Function (viewer-request) for the Foundry wiki.
+// Templated by OpenTofu: the *_host vars and redirect_target are injected at apply.
+//
+//   1. www.* -> 301 to the apex (canonical), preserving the path.
+//   2. On the wiki subdomain, redirect "/" to the docs entry point (skip the
+//      apex "who we are" landing).
+//   3. Rewrite clean URLs to the flat .html files emitted by `next export`
+//      (trailingSlash: false → /docs/installation.html, etc.).
+//
+// CloudFront Functions run a restricted JS runtime: ES5-style only (var, no
+// template literals, no arrow functions).
+
+function handler(event) {
+  var request = event.request;
+  var uri = request.uri;
+  var host = request.headers.host ? request.headers.host.value : "";
+
+  // 1. Canonical redirect: www.* -> apex (keep the path).
+  if (host === "${www_host}") {
+    return {
+      statusCode: 301,
+      statusDescription: "Moved Permanently",
+      headers: {
+        location: { value: "https://${apex_host}" + uri }
+      }
+    };
+  }
+
+  // 2. Host-aware redirect: wiki.* root -> Getting Started.
+  if (host === "${wiki_host}" && (uri === "/" || uri === "")) {
+    return {
+      statusCode: 302,
+      statusDescription: "Found",
+      headers: {
+        location: { value: "https://${wiki_host}${redirect_target}" },
+        "cache-control": { value: "no-cache" }
+      }
+    };
+  }
+
+  // 3. Clean URLs -> static .html files.
+  if (uri === "/" || uri === "") {
+    request.uri = "/index.html";
+  } else if (uri.endsWith("/")) {
+    request.uri = uri + "index.html";
+  } else if (uri.indexOf(".") === -1) {
+    request.uri = uri + ".html";
+  }
+
+  return request;
+}
