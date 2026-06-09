@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: foundry-wiki-prod
+  group: foundry-wiki-${{ github.ref }}
   cancel-in-progress: false
 
 permissions:
