@@ -30,6 +30,19 @@ requirements-dev.txt
 # TypeScript
 *.tsbuildinfo
 
+# OpenTofu / Terraform (wiki/ci/iac)
+.terraform/
+*.tfplan
+*.tfstate
+*.tfstate.*
+crash.log
+crash.*.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Keep the provider lock file committed (.terraform.lock.hcl) — do NOT ignore it.
+
 # Env files
 VERSION
 .env
