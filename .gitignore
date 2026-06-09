@@ -11,6 +11,10 @@ build/
 logs/
 .next/
 
+# Exception: wiki/lib is SOURCE (nav config), not build output — keep it tracked.
+!wiki/lib/
+!wiki/lib/**
+
 # Logs
 npm-debug.log*
 yarn-debug.log*
