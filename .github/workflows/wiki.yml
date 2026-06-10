@@ -23,7 +23,12 @@ on:
 
 concurrency:
   group: foundry-wiki-prod
-  cancel-in-progress: false
+  # A merge to release fires a deploy (push) while the PR's plan run may still
+  # be in flight holding the tofu state lock. Let a deploy (push/dispatch)
+  # cancel that in-progress PR run so it releases the lock. PR runs never apply
+  # (the apply/publish steps are gated to push/dispatch), so cancelling one is
+  # always safe; and deploys never cancel each other (no mid-apply interruption).
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
 permissions:
   id-token: write
@@ -62,7 +67,9 @@ jobs:
 
       - name: tofu plan
         working-directory: ${{ env.IAC_DIR }}
-        run: tofu plan -input=false -no-color -out plan.tfplan
+        # PR plans are read-only previews — don't take the state lock, so they
+        # can never block an apply on release. push/dispatch plans lock normally.
+        run: tofu plan -input=false -no-color -out plan.tfplan ${{ github.event_name == 'pull_request' && '-lock=false' || '' }}
 
       - name: tofu apply
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
