@@ -34,10 +34,11 @@ export default function GitHubCommandPage(): React.ReactElement {
 
         <h3>foundry github discover</h3>
         <pre><code>{`foundry github discover [--org ORG] [--prefix PREFIX]`}</code></pre>
-        <p>Discover platform repositories in a GitHub organisation.</p>
+        <p>Discover platform repositories in a GitHub organization.</p>
         <p>
           When run inside a project with <code>foundry.json</code>, reads the
-          organisation, prefix, and repository name from the manifest automatically.
+          organization (from the <a href="/docs/manifest/github"><code>github</code> block</a>),
+          prefix, and repository name from the manifest automatically.
         </p>
         <p>
           The primary platform repo is matched by its full name (derived from
