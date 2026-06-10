@@ -50,6 +50,12 @@ class DeploymentProfile:
     watch_paths: tuple[str, ...]          # Paths that trigger deployment on change
     database: str | None                  # Logical database name (for migration ordering)
 
+    # Multi-repo (v0.7.0). ``repository`` is the owner/repo the service lives in
+    # (None = same repo as the manifest / monorepo). ``path`` is its location
+    # within that repo (``"."`` = repo root). Paths above are relative to the repo.
+    repository: str | None = None
+    path: str = "."
+
     @property
     def is_deployable(self) -> bool:
         """Whether this service has a real deployment strategy."""
@@ -321,13 +327,34 @@ def resolve_deployment_profile(
     # Normalise legacy names: ecs→service, s3-static→static
     strategy = {"ecs": "service", "s3-static": "static"}.get(raw_strategy, raw_strategy)
 
+    # Multi-repo (v0.7.0): when a service declares its own repo and/or an
+    # explicit path, derive paths relative to that location (repo-relative)
+    # instead of the monorepo ``apps/{kind}/{name}`` convention. Pure monorepo
+    # services (no repository, no path) keep the existing behavior byte-for-byte.
+    repo_relative = service.is_multi_repo or bool(service.path)
+    loc = (service.path or ".").rstrip("/") or "."
+
     # 2. Dockerfile
-    dockerfile = deploy.dockerfile or _default_dockerfile(kind, name, strategy, structure)
+    if deploy.dockerfile:
+        dockerfile = deploy.dockerfile
+    elif repo_relative:
+        dockerfile = (
+            (f"{loc}/Dockerfile" if loc != "." else "Dockerfile")
+            if strategy == "service"
+            else None
+        )
+    else:
+        dockerfile = _default_dockerfile(kind, name, strategy, structure)
 
     # 3. Build context
-    build_context = deploy.build_context or _default_build_context(
-        kind, type_, name, strategy, structure,
-    )
+    if deploy.build_context:
+        build_context = deploy.build_context
+    elif repo_relative:
+        build_context = loc
+    else:
+        build_context = _default_build_context(
+            kind, type_, name, strategy, structure,
+        )
 
     # 4. Build command
     build_command = deploy.build_command or _default_build_command(type_, strategy)
@@ -351,7 +378,12 @@ def resolve_deployment_profile(
         depends_on = _default_depends_on(db, sidecars, strategy)
 
     # 9. Watch paths (always derived — not overridable)
-    watch_paths = _derive_watch_paths(name, kind, structure)
+    if repo_relative:
+        # Repo-relative: a service at the repo root watches the whole repo;
+        # at a subdir, just that subdir.
+        watch_paths = ("^",) if loc == "." else (f"^{loc}/",)
+    else:
+        watch_paths = _derive_watch_paths(name, kind, structure)
 
     return DeploymentProfile(
         name=name,
@@ -368,6 +400,8 @@ def resolve_deployment_profile(
         sidecars=sidecars,
         watch_paths=watch_paths,
         database=db,
+        repository=service.repository,
+        path=loc,
     )
 
 
