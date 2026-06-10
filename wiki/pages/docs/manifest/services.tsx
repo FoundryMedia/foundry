@@ -6,99 +6,78 @@ export default function ServicesPage(): React.ReactElement {
       <div className="prose-wiki max-w-3xl">
         <h1>Services</h1>
         <p>
-          Each key in <code>services</code> is a service name (kebab-case). The value
-          declares what the service IS — not how to run it.
+          Each key in <code>services</code> is a service name. The value declares what the service
+          IS, grouped into structured blocks: <code>scope</code> (visibility),{" "}
+          <code>stack</code> (technology), <code>deploy</code> (how it ships), and{" "}
+          <code>run</code> (local dev). Multi-repo services add <code>repository</code> and{" "}
+          <code>path</code>.
         </p>
 
-        <h2>Service Fields</h2>
+        <h2>Service fields</h2>
         <table>
           <thead>
             <tr><th>Field</th><th>Type</th><th>Description</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>kind</code></td><td>string</td><td><code>backend</code>, <code>frontend</code>, or <code>package</code></td></tr>
-            <tr><td><code>type</code></td><td>string</td><td>Runtime type — see table below</td></tr>
-            <tr><td><code>role</code></td><td>string</td><td>Platform role — see table below</td></tr>
-            <tr><td><code>database</code></td><td>string</td><td>Logical database name (key in <code>databases</code>)</td></tr>
-            <tr><td><code>apiLibModule</code></td><td>string</td><td>API lib module this service consumes</td></tr>
+            <tr><td><code>scope</code></td><td>string</td><td><code>public</code> or <code>internal</code> — visibility of the service</td></tr>
+            <tr><td><code>stack</code></td><td>object</td><td><code>type</code>, <code>framework</code>, <code>language</code> — see below</td></tr>
+            <tr><td><code>deploy</code></td><td>object</td><td>How it ships. Requires <code>strategy</code>. See <a href="/docs/manifest/deploy-strategies">Deploy Strategies</a></td></tr>
+            <tr><td><code>run</code></td><td>object</td><td>Local dev runtime — ports, args, env, health checks</td></tr>
+            <tr><td><code>database</code></td><td>string / object</td><td>Inline database config (engine, changelog, schema)</td></tr>
+            <tr><td><code>repository</code></td><td>string</td><td>Multi-repo: the <code>owner/repo</code> this service lives in. See <a href="/docs/manifest/multi-repo">Multi-repo</a></td></tr>
+            <tr><td><code>path</code></td><td>string</td><td>Multi-repo: the service{"'"}s path within its repository (<code>.</code> = root)</td></tr>
+            <tr><td><code>environments</code></td><td>object</td><td>Multi-repo: per-service env→branch override. See <a href="/docs/manifest/environments">Environments</a></td></tr>
           </tbody>
         </table>
 
-        <h2>Kind</h2>
+        <h2>stack</h2>
         <table>
           <thead>
-            <tr><th>Value</th><th>Meaning</th><th>Location</th></tr>
+            <tr><th>Field</th><th>Values</th><th>Meaning</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>backend</code></td><td>Server-side service</td><td><code>apps/backend/</code></td></tr>
-            <tr><td><code>frontend</code></td><td>Client-side application</td><td><code>apps/frontend/</code></td></tr>
-            <tr><td><code>package</code></td><td>Shared library / config package</td><td><code>packages/</code></td></tr>
+            <tr><td><code>type</code></td><td><code>backend</code>, <code>frontend</code>, <code>package</code></td><td>Architecture category. In a monorepo it also fixes the location: <code>backend</code>→<code>apps/backend/&#123;name&#125;</code>, <code>frontend</code>→<code>apps/frontend/&#123;name&#125;</code>, <code>package</code>→<code>packages/&#123;name&#125;</code></td></tr>
+            <tr><td><code>framework</code></td><td><code>spring-boot</code>, <code>uvicorn</code>, <code>nextjs</code>, <code>vite</code>, …</td><td>The concrete runtime/framework. Drives convention defaults (Dockerfile, build context, secrets)</td></tr>
+            <tr><td><code>language</code></td><td><code>java</code>, <code>python</code>, <code>typescript</code>, …</td><td>Primary language (optional)</td></tr>
           </tbody>
         </table>
 
-        <h2>Type</h2>
-        <table>
-          <thead>
-            <tr><th>Value</th><th>Stack</th></tr>
-          </thead>
-          <tbody>
-            <tr><td><code>spring-boot</code></td><td>Java Spring Boot</td></tr>
-            <tr><td><code>uvicorn</code></td><td>Python ASGI (FastAPI, Starlette)</td></tr>
-            <tr><td><code>gunicorn</code></td><td>Python WSGI (Flask, Django)</td></tr>
-            <tr><td><code>nextjs</code></td><td>Next.js (React)</td></tr>
-            <tr><td><code>vite</code></td><td>Vite (React, Vue, Svelte)</td></tr>
-            <tr><td><code>express</code></td><td>Node.js Express</td></tr>
-            <tr><td><code>django</code></td><td>Django</td></tr>
-            <tr><td><code>flask</code></td><td>Flask</td></tr>
-            <tr><td><code>other</code></td><td>Custom</td></tr>
-          </tbody>
-        </table>
+        <blockquote>
+          <code>stack.type</code> (what it is / where it lives) is orthogonal to{" "}
+          <code>deploy.strategy</code> (how it ships). A <code>frontend</code> can deploy as{" "}
+          <code>static</code> (S3/CDN) or <code>service</code> (SSR on ECS); a <code>package</code>{" "}
+          deploys as <code>none</code>.
+        </blockquote>
 
-        <h2>Role</h2>
+        <h2>Deprecated fields (v0.5.0)</h2>
+        <p>The flat v0.4.0 fields were grouped into blocks. The CLI still reads the old names as aliases, but new manifests should use the blocks:</p>
         <table>
           <thead>
-            <tr><th>Value</th><th>Meaning</th></tr>
+            <tr><th>Old (deprecated)</th><th>New</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>microlith</code></td><td>Core platform API (monolith or microlith)</td></tr>
-            <tr><td><code>auth</code></td><td>Authentication / authorization service</td></tr>
-            <tr><td><code>hub</code></td><td>Internal dashboard / admin UI</td></tr>
-            <tr><td><code>public</code></td><td>Public-facing site</td></tr>
-            <tr><td><code>status</code></td><td>Status / monitoring dashboard</td></tr>
-            <tr><td><code>worker</code></td><td>Background job processor</td></tr>
-            <tr><td><code>internal</code></td><td>Internal utility service (NLP, profanity, etc.)</td></tr>
-            <tr><td><code>gateway</code></td><td>API gateway / reverse proxy</td></tr>
-            <tr><td><code>other</code></td><td>Anything else</td></tr>
+            <tr><td><code>kind</code></td><td><code>stack.type</code></td></tr>
+            <tr><td><code>type</code></td><td><code>stack.framework</code></td></tr>
+            <tr><td><code>role</code></td><td><code>scope</code></td></tr>
+            <tr><td><code>strategy</code></td><td><code>deploy.strategy</code></td></tr>
           </tbody>
         </table>
 
         <h2>Example</h2>
         <pre><code>{`"services": {
-  "platform-microlith": {
-    "kind": "backend",
-    "type": "spring-boot",
-    "role": "microlith",
-    "database": "platform",
-    "apiLibModule": "platform-microlith"
+  "api": {
+    "scope": "internal",
+    "stack": { "type": "backend", "framework": "spring-boot", "language": "java" },
+    "deploy": { "strategy": "service" },
+    "database": { "engine": "postgresql", "changelog": "ci/db/api/changelog-master.xml" }
   },
-  "auth-efga": {
-    "kind": "backend",
-    "type": "spring-boot",
-    "role": "auth",
-    "database": "auth"
-  },
-  "nlp-profanity": {
-    "kind": "backend",
-    "type": "uvicorn",
-    "role": "internal"
-  },
-  "hub-frontend": {
-    "kind": "frontend",
-    "type": "nextjs",
-    "role": "hub"
+  "web": {
+    "scope": "public",
+    "stack": { "type": "frontend", "framework": "nextjs", "language": "typescript" },
+    "deploy": { "strategy": "static", "cdn": true }
   },
   "shared": {
-    "kind": "package"
+    "stack": { "type": "package" }
   }
 }`}</code></pre>
       </div>
