@@ -22,8 +22,8 @@ on:
   workflow_dispatch:
 
 concurrency:
-  group: foundry-wiki-${{ github.ref }}
-  cancel-in-progress: false
+  group: foundry-wiki-prod
+  cancel-in-progress: ${{ github.event_name == 'push' || github.event_name == 'workflow_dispatch' }}
 
 permissions:
   id-token: write
@@ -62,7 +62,9 @@ jobs:
 
       - name: tofu plan
         working-directory: ${{ env.IAC_DIR }}
-        run: tofu plan -input=false -no-color -out plan.tfplan
+        # PR plans are read-only previews — don't take the state lock, so they
+        # can never block an apply on release. push/dispatch plans lock normally.
+        run: tofu plan -input=false -no-color -out plan.tfplan ${{ github.event_name == 'pull_request' && '-lock=false' || '' }}
 
       - name: tofu apply
         if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'

@@ -1,4 +1,5 @@
 import { WikiLayout } from "@/components/WikiLayout";
+import { CodeList } from "@/components/CodeList";
 
 export default function RunCommandPage(): React.ReactElement {
   return (
@@ -35,7 +36,7 @@ foundry run [-d|--debug] build [--filter NAMES]`}</code></pre>
             <tr><th>Flag</th><th>Applies to</th><th>Description</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>--filter</code></td><td><code>dev</code>, <code>build</code></td><td>Comma-separated service names to run (dependencies are included automatically)</td></tr>
+            <tr><td><code>--filter</code></td><td><CodeList items={["dev", "build"]} /></td><td>Comma-separated service names to run (dependencies are included automatically)</td></tr>
             <tr><td><code>--migrate-db, -mdb</code></td><td><code>dev</code></td><td>Run Liquibase migrations before starting services that have a <code>database</code> block</td></tr>
             <tr><td><code>--debug, -d</code></td><td>group</td><td>Show debug output</td></tr>
           </tbody>
