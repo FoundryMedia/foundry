@@ -8,15 +8,21 @@ interface SchemaPageProps {
 }
 
 export const getStaticProps: GetStaticProps<SchemaPageProps> = async () => {
-  // Read the actual schema from the foundry repo at build time
-  const schemaPath = path.join(process.cwd(), "..", "schemas", "foundry.schema.json");
-  let schemaJson = "{}";
+  // Read the actual schema from the foundry repo root at build time.
+  // The wiki builds from foundry/wiki, so the schema is one level up.
+  const candidates = [
+    path.join(process.cwd(), "..", "foundry.schema.json"),
+    path.join(process.cwd(), "foundry.schema.json"),
+  ];
+  let schemaJson = JSON.stringify({ error: "Schema not found at build time" }, null, 2);
 
-  try {
-    schemaJson = fs.readFileSync(schemaPath, "utf-8");
-  } catch {
-    // Fallback if schema not found at build time
-    schemaJson = JSON.stringify({ error: "Schema not found at build time" }, null, 2);
+  for (const candidate of candidates) {
+    try {
+      schemaJson = fs.readFileSync(candidate, "utf-8");
+      break;
+    } catch {
+      // try the next candidate
+    }
   }
 
   return { props: { schemaJson } };
@@ -31,7 +37,7 @@ export default function SchemaReferencePage({ schemaJson }: SchemaPageProps): Re
         <h1>Schema Reference</h1>
 
         <div className="flex items-center gap-3 mb-6">
-          <span className="badge-green">v{schema.schemaVersion ?? "0.3.0"}</span>
+          <span className="badge-green">v{schema.schemaVersion ?? "0.7.0"}</span>
           <span className="text-sm text-slate-400">
             <code>{schema.$id ?? "foundry.schema.json"}</code>
           </span>

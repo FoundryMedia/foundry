@@ -1,17 +1,18 @@
 import Link from "next/link";
+import { Rocket, Network, FileJson, SquareTerminal, Ship, Server, type LucideIcon } from "lucide-react";
 import { WikiLayout } from "@/components/WikiLayout";
 
 interface FeatureCardProps {
-  icon: string;
+  icon: LucideIcon;
   title: string;
   description: string;
   href: string;
 }
 
-function FeatureCard({ icon, title, description, href }: FeatureCardProps): React.ReactElement {
+function FeatureCard({ icon: Icon, title, description, href }: FeatureCardProps): React.ReactElement {
   return (
     <Link href={href} className="card block no-underline group">
-      <div className="text-2xl mb-3">{icon}</div>
+      <Icon className="h-6 w-6 text-foundry-400 mb-3" strokeWidth={1.75} aria-hidden="true" />
       <h3 className="text-lg font-semibold text-white group-hover:text-foundry-400 transition-colors mb-2">
         {title}
       </h3>
@@ -25,62 +26,69 @@ export default function HomePage(): React.ReactElement {
     <WikiLayout title="Foundry Wiki" description="Documentation for the Foundry platform orchestration toolkit.">
       {/* Hero */}
       <div className="mb-12">
-        <h1 className="text-4xl font-bold tracking-tight mb-4">
-          <span className="text-foundry-400">⚒</span> Foundry Wiki
+        <h1 className="flex items-center gap-3 text-4xl font-bold tracking-tight mb-4">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src="/logo.svg" alt="" width={40} height={40} className="h-10 w-10" />
+          Foundry Wiki
         </h1>
         <p className="text-lg text-slate-400 max-w-2xl leading-relaxed">
-          Foundry is a platform orchestration toolkit. It manages multi-repo platforms
-          with a single declarative manifest — defining topology, services, databases,
-          and infrastructure from one source of truth.
+          Foundry is a declarative, manifest-driven framework for building and operating
+          platforms. One manifest describes the platform — its services, stacks, environments,
+          and how each service deploys. The <code>foundry</code> CLI scaffolds it, runs it
+          locally, and generates its CI/CD; <code>foundry-ops</code> orchestrates deploys;
+          <code>foundry-iac</code> holds the shared infrastructure modules.
         </p>
       </div>
 
       {/* Quick links grid */}
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3 mb-12">
         <FeatureCard
-          icon="🚀"
+          icon={Rocket}
           title="Quick Start"
-          description="Get a platform running in 5 minutes. Install the CLI, init a project, and launch services."
+          description="Install the CLI, init a project, and run services locally with foundry run dev."
           href="/docs/quick-start"
         />
         <FeatureCard
-          icon="📋"
-          title="Manifest Reference"
-          description="The foundry.json schema — services, ecosystem, databases, and structure configuration."
+          icon={Network}
+          title="Repo Topology"
+          description="The three-repo model: manifest is the brain, foundry-ops owns CI/CD, foundry-iac holds modules."
+          href="/docs/concepts/topology"
+        />
+        <FeatureCard
+          icon={FileJson}
+          title="The Manifest"
+          description="foundry.json / platform.json — services, stacks, deploy strategies, environments, multi-repo."
           href="/docs/manifest/overview"
         />
         <FeatureCard
-          icon="⚙️"
-          title="CLI Commands"
-          description="foundry init, run, github — command reference with examples and flags."
-          href="/docs/cli/init"
+          icon={SquareTerminal}
+          title="CLI Reference"
+          description="init, generate, run, sync, db, github, config, alias — what each command actually does."
+          href="/docs/cli/overview"
         />
         <FeatureCard
-          icon="🔗"
-          title="Ecosystem & Discovery"
-          description="Cross-repo discovery via GitHub API. Naming conventions, prefixes, and org topology."
-          href="/docs/manifest/ecosystem"
+          icon={Ship}
+          title="Deploy Model"
+          description="Thin caller → foundry-ops reusable workflow → orchestrator → smart IaC (plan, apply on change)."
+          href="/docs/deploy/model"
         />
         <FeatureCard
-          icon="📁"
-          title=".foundry/ Directory"
-          description="Runtime config, local state, gitignore strategy — the split between committed and local files."
-          href="/docs/config/dotfoundry"
-        />
-        <FeatureCard
-          icon="📦"
-          title="Templates"
-          description="Scaffold new platforms from templates. Structure enforcement and init wizards."
-          href="/docs/templates/overview"
+          icon={Server}
+          title="Infrastructure"
+          description="Shared foundry-iac modules + control-plane stack, plus per-repo ci/iac app-edge stacks."
+          href="/docs/iac/layout"
         />
       </div>
 
       {/* Schema version banner */}
       <div className="card flex items-center gap-4">
-        <div className="badge-green">v0.3.0</div>
+        <div className="badge-green">Manifest spec v0.7.0</div>
         <p className="text-sm text-slate-400">
-          Current manifest schema version. Services are lean — operational config lives in{" "}
-          <code>.foundry/runtime.yml</code>.
+          The manifest schema is at v0.7.0 (multi-repo: per-service <code>repository</code>,{" "}
+          <code>path</code>, and <code>environments</code>; a unified <code>deploy.strategy</code>).
+          <code>foundry init</code> currently scaffolds a single-repo v0.5.0 manifest — the
+          multi-repo fields are additive and used by the central{" "}
+          <Link href="/docs/manifest/central">foundry-ops/platform.json</Link>.
         </p>
       </div>
     </WikiLayout>
