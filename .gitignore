@@ -11,6 +11,9 @@ build/
 logs/
 .next/
 
+# wiki/lib/ holds source (the Sidebar navigation), not build output — keep tracked
+!wiki/lib/
+
 # Logs
 npm-debug.log*
 yarn-debug.log*
