@@ -15,7 +15,7 @@ interface CodeListProps {
  */
 export function CodeList({ items, trailing }: CodeListProps): React.ReactElement {
   return (
-    <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-1 align-middle">
+    <span className="inline-flex flex-wrap items-center gap-x-1.5 gap-y-1.5 align-middle">
       {items.map((item, i) => {
         const comma = trailing != null || i < items.length - 1;
         return (
