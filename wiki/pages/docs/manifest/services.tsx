@@ -1,4 +1,5 @@
 import { WikiLayout } from "@/components/WikiLayout";
+import { CodeList } from "@/components/CodeList";
 
 export default function ServicesPage(): React.ReactElement {
   return (
@@ -36,9 +37,9 @@ export default function ServicesPage(): React.ReactElement {
             <tr><th>Field</th><th>Values</th><th>Meaning</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>type</code></td><td><code>backend</code>, <code>frontend</code>, <code>package</code></td><td>Architecture category. In a monorepo it also fixes the location: <code>backend</code>→<code>apps/backend/&#123;name&#125;</code>, <code>frontend</code>→<code>apps/frontend/&#123;name&#125;</code>, <code>package</code>→<code>packages/&#123;name&#125;</code></td></tr>
-            <tr><td><code>framework</code></td><td><code>spring-boot</code>, <code>uvicorn</code>, <code>nextjs</code>, <code>vite</code>, …</td><td>The concrete runtime/framework. Drives convention defaults (Dockerfile, build context, secrets)</td></tr>
-            <tr><td><code>language</code></td><td><code>java</code>, <code>python</code>, <code>typescript</code>, …</td><td>Primary language (optional)</td></tr>
+            <tr><td><code>type</code></td><td><CodeList items={["backend", "frontend", "package"]} /></td><td>Architecture category. In a monorepo it also fixes the location: <span className="whitespace-nowrap"><code>backend</code> → <code>apps/backend/&#123;name&#125;</code></span>, <span className="whitespace-nowrap"><code>frontend</code> → <code>apps/frontend/&#123;name&#125;</code></span>, <span className="whitespace-nowrap"><code>package</code> → <code>packages/&#123;name&#125;</code></span></td></tr>
+            <tr><td><code>framework</code></td><td><CodeList items={["spring-boot", "uvicorn", "nextjs", "vite"]} trailing="…" /></td><td>The concrete runtime/framework. Drives convention defaults (Dockerfile, build context, secrets)</td></tr>
+            <tr><td><code>language</code></td><td><CodeList items={["java", "python", "typescript"]} trailing="…" /></td><td>Primary language (optional)</td></tr>
           </tbody>
         </table>
 

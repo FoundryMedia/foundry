@@ -82,10 +82,11 @@ export default function HomePage(): React.ReactElement {
 
       {/* Schema version banner */}
       <div className="card flex items-center gap-4">
-        <div className="badge-green">Manifest spec v0.7.0</div>
+        <div className="badge-green shrink-0 whitespace-nowrap">v0.7.0</div>
         <p className="text-sm text-slate-400">
-          The manifest schema is at v0.7.0 (multi-repo: per-service <code>repository</code>,{" "}
-          <code>path</code>, and <code>environments</code>; a unified <code>deploy.strategy</code>).
+          The manifest schema is at <strong className="text-slate-200">v0.7.0</strong> — multi-repo
+          (per-service <code>repository</code>, <code>path</code>, and <code>environments</code>) and a
+          unified <code>deploy.strategy</code>.{" "}
           <code>foundry init</code> currently scaffolds a single-repo v0.5.0 manifest — the
           multi-repo fields are additive and used by the central{" "}
           <Link href="/docs/manifest/central">foundry-ops/platform.json</Link>.
