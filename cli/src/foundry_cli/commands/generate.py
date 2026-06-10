@@ -167,3 +167,70 @@ def tfvars(ctx: click.Context, clean: bool) -> None:
                 fg="yellow",
             )
         )
+
+
+@generate.command(name="callers")
+@click.option(
+    "--manifest", "manifest_path",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Central platform manifest (default: <dir>/platform.json, else foundry.json).",
+)
+@click.option(
+    "--out", "out_dir",
+    type=click.Path(file_okay=False),
+    default=None,
+    help="Write under <out>/<repo>/.github/workflows/. Default: print to stdout.",
+)
+@click.option("--env", "env_name", default="prod", help="Target environment (default: prod).")
+@click.option("--ref", default="main", help="foundry-ops ref the callers pin (default: main).")
+@click.pass_context
+def callers(
+    ctx: click.Context,
+    manifest_path: str | None,
+    out_dir: str | None,
+    env_name: str,
+    ref: str,
+) -> None:
+    """Generate per-service thin-caller workflows from the central manifest.
+
+    Multi-repo (v0.7.0): foundry-ops owns the pipeline; each service repo carries
+    only a thin caller that names its service and delegates to the reusable
+    deploy.yml. This emits those callers from platform.json.
+    """
+    from foundry_cli.core.project.manifest import load_manifest_from_path
+    from foundry_cli.generators.callers import generate_all_callers
+
+    root = ctx.obj["directory"]
+    if manifest_path:
+        mp = Path(manifest_path)
+    else:
+        mp = root / "platform.json"
+        if not mp.exists():
+            mp = root / "foundry.json"
+    if not mp.exists():
+        raise FoundryError(
+            f"No central manifest found (looked for platform.json / foundry.json in {root})."
+        )
+
+    manifest = load_manifest_from_path(mp)
+    results = generate_all_callers(manifest, env=env_name, ref=ref)
+    if not results:
+        click.echo(
+            click.style(
+                "⚠️  No orchestrated (static/service) services — nothing to generate.",
+                fg="yellow",
+            )
+        )
+        return
+
+    click.echo(click.style("🧩 Generating thin-caller workflows...", fg="cyan", bold=True))
+    for (repo, filename), content in sorted(results.items()):
+        if out_dir:
+            target = Path(out_dir) / repo / ".github" / "workflows" / filename
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(content, encoding="utf-8")
+            click.echo(click.style("  ✅ ", fg="green") + click.style(str(target), fg="white"))
+        else:
+            click.echo(click.style(f"\n# ── {repo}/.github/workflows/{filename} ──", fg="cyan"))
+            click.echo(content)
