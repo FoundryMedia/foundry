@@ -345,6 +345,17 @@ class ServiceConfig:
     # v0.5.0 identity
     scope: str | None = None              # public, internal
 
+    # Multi-repo (v0.7.0). ``repository`` is the GitHub ``owner/repo`` the service
+    # lives in; ``None`` means it lives in the same repo as the manifest (monorepo).
+    # ``path`` is the service's location WITHIN that repo; ``None``/``"."`` means the
+    # repo root (multi-repo), otherwise a subdir (monorepo, e.g. ``apps/backend/x``).
+    repository: str | None = None
+    path: str | None = None
+
+    # Multi-repo (v0.7.0). Per-service override of the platform-wide
+    # ``ci.environments`` (env → branch). Empty = inherit the platform default.
+    environments: dict[str, "EnvironmentConfig"] = field(default_factory=dict)
+
     # Stack (nested block in v0.5.0; derived from kind/type in v0.4.0)
     stack_type: str | None = None         # backend, frontend, package
     stack_framework: str | None = None    # spring-boot, uvicorn, nextjs, etc.
@@ -412,6 +423,16 @@ class ServiceConfig:
         if self.deploy and self.deploy.strategy:
             return self.deploy.strategy
         return None
+
+    @property
+    def is_multi_repo(self) -> bool:
+        """True when the service declares its own repository (vs. the monorepo)."""
+        return bool(self.repository)
+
+    @property
+    def effective_path(self) -> str:
+        """Service location within its repo. ``"."`` = repo root (multi-repo default)."""
+        return self.path or "."
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ServiceConfig":
@@ -515,8 +536,19 @@ class ServiceConfig:
         if debug_data is not None:
             debug = DebugConfig.from_value(debug_data)
 
+        # ── Per-service environment overrides (v0.7.0 multi-repo) ────
+        svc_environments: dict[str, EnvironmentConfig] = {}
+        raw_envs = data.get("environments", {})
+        if isinstance(raw_envs, dict):
+            for env_name, cfg in raw_envs.items():
+                if isinstance(cfg, dict):
+                    svc_environments[env_name] = EnvironmentConfig.from_dict(cfg)
+
         return cls(
             scope=scope,
+            repository=data.get("repository"),
+            path=data.get("path"),
+            environments=svc_environments,
             stack_type=stack_type,
             stack_framework=stack_framework,
             stack_language=stack_language,
@@ -750,6 +782,19 @@ class ProjectManifest:
             if env_cfg.branch == branch and env_cfg.enabled:
                 return env_name
         return None
+
+    def resolve_environments(self, service_name: str) -> dict[str, EnvironmentConfig]:
+        """Effective env→config for a service (v0.7.0 multi-repo).
+
+        Per-service ``environments`` overrides are layered on top of the
+        platform-wide ``ci.environments``, so a service living in a repo with a
+        different branch model deploys from its own branch.
+        """
+        merged = dict(self.environments)
+        svc = self.services_config.get(service_name)
+        if svc and svc.environments:
+            merged.update(svc.environments)
+        return merged
 
     @property
     def services_config(self) -> dict[str, ServiceConfig]:
