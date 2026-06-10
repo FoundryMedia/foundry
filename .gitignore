@@ -11,8 +11,9 @@ build/
 logs/
 .next/
 
-# wiki/lib/ holds source (the Sidebar navigation), not build output — keep tracked
+# Exception: wiki/lib is SOURCE (nav config), not build output — keep it tracked.
 !wiki/lib/
+!wiki/lib/**
 
 # Logs
 npm-debug.log*

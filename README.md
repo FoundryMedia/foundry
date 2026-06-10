@@ -1,4 +1,4 @@
-# [Foundry](https://foundry-dev.com) · [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#) [![Wiki](https://img.shields.io/badge/Wiki-foundry--dev.com-blue.svg)](https://foundry-dev.com) [![PRs](https://img.shields.io/badge/PRs-encouraged-purple.svg)](#)
+# [Foundry](https://foundry-dev.com) · [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#) [![npm version](https://img.shields.io/npm/v/foundry.svg)](#) [![PRs](https://img.shields.io/badge/PRs-encouraged-purple.svg)](#)
 
 ---
 
