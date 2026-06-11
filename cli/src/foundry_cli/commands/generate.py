@@ -184,6 +184,11 @@ def tfvars(ctx: click.Context, clean: bool) -> None:
 )
 @click.option("--env", "env_name", default="prod", help="Target environment (default: prod).")
 @click.option("--ref", default="main", help="foundry-ops ref the callers pin (default: main).")
+@click.option(
+    "--exclude-repo", "exclude_repos", multiple=True,
+    help="owner/repo to skip (repeatable). Use for PUBLIC repos — they can't call "
+         "the ops repo's private reusable workflow, so they self-deploy.",
+)
 @click.pass_context
 def callers(
     ctx: click.Context,
@@ -191,12 +196,17 @@ def callers(
     out_dir: str | None,
     env_name: str,
     ref: str,
+    exclude_repos: tuple[str, ...],
 ) -> None:
     """Generate per-service thin-caller workflows from the central manifest.
 
     Multi-repo (v0.7.0): foundry-ops owns the pipeline; each service repo carries
     only a thin caller that names its service and delegates to the reusable
     deploy.yml. This emits those callers from platform.json.
+
+    Exclude public-repo services with ``--exclude-repo owner/repo``: a thin caller
+    delegates to the ops repo's private reusable workflow, and a public repo can't
+    call a reusable workflow in a private repo.
     """
     from foundry_cli.core.project.manifest import load_manifest_from_path
     from foundry_cli.generators.callers import generate_all_callers
@@ -214,7 +224,9 @@ def callers(
         )
 
     manifest = load_manifest_from_path(mp)
-    results = generate_all_callers(manifest, env=env_name, ref=ref)
+    results = generate_all_callers(
+        manifest, env=env_name, ref=ref, exclude_repos=set(exclude_repos),
+    )
     if not results:
         click.echo(
             click.style(
