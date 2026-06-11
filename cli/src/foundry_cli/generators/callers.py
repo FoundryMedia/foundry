@@ -238,6 +238,7 @@ def generate_all_callers(
     env: str = "prod",
     *,
     ref: str = "main",
+    exclude_repos: set[str] | None = None,
 ) -> dict[tuple[str, str], str]:
     """Map ``(repo, filename) -> workflow YAML`` for every deployable service.
 
@@ -247,7 +248,13 @@ def generate_all_callers(
     a build/verify reusable also gets ``build-<svc>.yml`` (display ``Build: <svc>``)
     for PR/push checks. Services without their own ``repository`` fall back to the
     manifest's repo.
+
+    ``exclude_repos`` — ``owner/repo`` strings to skip. A thin caller delegates to
+    the ops repo's reusable workflows, which live in a PRIVATE repo; a PUBLIC repo
+    cannot call a reusable workflow in a private repo, so public-repo services must
+    self-deploy and be excluded here (and the file-sync skips them too).
     """
+    excl = exclude_repos or set()
     services = manifest.services_config
     env_options = [n for n, c in manifest.environments.items() if c.enabled] or ["prod"]
 
@@ -257,6 +264,8 @@ def generate_all_callers(
         if handler is None:
             continue
         repo = svc.repository or manifest.repository or "."
+        if repo in excl:
+            continue
         envs = manifest.resolve_environments(name)
         branch = envs[env].branch if env in envs else "main"
 
