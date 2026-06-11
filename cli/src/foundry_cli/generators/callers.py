@@ -1,34 +1,72 @@
 """Thin-caller generator (multi-repo, v0.7.0).
 
 From the central platform manifest, emit the per-service **thin-caller** GitHub
-Actions workflow each service repo carries: it just names the service and
-delegates to the platform ops repo's reusable ``deploy.yml``. The ops repo owns
-the pipeline; service repos stay thin.
+Actions workflows each service repo carries: they name the service and delegate
+to the platform ops repo's reusable workflows. The ops repo owns the pipeline;
+service repos stay thin.
+
+THE EXTENSION POINT — ``STRATEGY_REGISTRY``. Each ``deploy.strategy`` maps to a
+``StrategyHandler`` describing how its caller is generated: which ops reusable it
+targets, whether the handler is the single-runner orchestrator or a matrix build,
+the trigger model, and an optional PR-verify reusable. To support a new deploy
+target (lambda, app-store, …) add a registry row + the matching ops reusable. A
+new *build framework* under an existing target usually needs no change here:
+``static`` takes any web framework via ``buildCommand`` and ``service`` any
+container via ``Dockerfile`` (single-runner targets are framework-agnostic);
+matrix targets switch on ``stack.framework`` inside their reusable.
 
 ORG-AGNOSTIC: nothing here is hard-coded to a particular company. The reusable
-workflow reference (``<org>/<ops-repo>/.github/workflows/deploy.yml``) is derived
-from the manifest — ``<org>`` from ``github.organization`` (or
+workflow reference (``<org>/<ops-repo>/.github/workflows/<wf>``) is derived from
+the manifest — ``<org>`` from ``github.organization`` (or
 ``ecosystem.organization``) and ``<ops-repo>`` from the manifest's own
-``repository`` (the repo the central manifest lives in). Another org points its
-own manifest at its own ops repo and App; the SDK assumes nothing about ours.
+``repository`` (the repo the central manifest lives in).
 
 Pure data → string. No I/O here; the command layer writes the files.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from foundry_cli.core.project.manifest import ProjectManifest, ServiceConfig
 
-# Strategies the orchestrated reusable deploy.yml handles on push. desktop /
-# game-publisher ship via their own release flows; none / library aren't deployed.
-ORCHESTRATED_STRATEGIES = {"static", "service"}
 
-# Convention: the ops repo exposes its reusable deploy pipeline at this path.
-_OPS_WORKFLOW = ".github/workflows/deploy.yml"
+@dataclass(frozen=True)
+class StrategyHandler:
+    """How a deploy strategy's thin caller is generated (see module docstring)."""
 
-# A literal GitHub Actions expression — kept out of f-strings to avoid brace
+    workflow: str                       # ops reusable filename the deploy caller targets
+    target: str                         # "orchestrator" (single-runner) | "matrix"
+    trigger: str                        # "push" (continuous) | "release" (dispatch + version)
+    verify_workflow: str | None = None  # optional PR-verify reusable (push/PR caller)
+    mandatory_input: bool = False       # release caller exposes a `mandatory` flag (desktop)
+
+
+# Strategy -> handler. The single source of truth for caller generation.
+# Strategies absent here (none/library) are not deployed and get no caller.
+STRATEGY_REGISTRY: dict[str, StrategyHandler] = {
+    "static": StrategyHandler(
+        workflow="deploy.yml", target="orchestrator", trigger="push",
+    ),
+    "service": StrategyHandler(
+        workflow="deploy.yml", target="orchestrator", trigger="release",
+        verify_workflow="service-build.yml",
+    ),
+    "desktop": StrategyHandler(
+        workflow="desktop-release.yml", target="matrix", trigger="release",
+        verify_workflow="desktop-build.yml", mandatory_input=True,
+    ),
+    # "game-publisher": StrategyHandler(
+    #     workflow="publisher-release.yml", target="matrix", trigger="release",
+    #     verify_workflow=None, mandatory_input=True),  # add when needed
+}
+
+# Literal GitHub Actions expressions — kept out of f-strings to avoid brace
 # escaping.
 _GH_REF = "${{ github.ref }}"
+_IN_VERSION = "${{ inputs.version }}"
+_IN_ENV = "${{ inputs.environment }}"
+_IN_MANDATORY = "${{ inputs.mandatory }}"
 
 
 def _manifest_org(manifest: ProjectManifest) -> str | None:
@@ -43,8 +81,8 @@ def _manifest_org(manifest: ProjectManifest) -> str | None:
     return None
 
 
-def ops_reusable_ref(manifest: ProjectManifest, ref: str = "main") -> str:
-    """``<org>/<ops-repo>/.github/workflows/deploy.yml@<ref>`` derived from the
+def ops_reusable_ref(manifest: ProjectManifest, workflow: str, ref: str = "main") -> str:
+    """``<org>/<ops-repo>/.github/workflows/<workflow>@<ref>`` derived from the
     manifest. The ops repo is the repo the central manifest lives in
     (``manifest.repository``)."""
     org = _manifest_org(manifest)
@@ -54,31 +92,42 @@ def ops_reusable_ref(manifest: ProjectManifest, ref: str = "main") -> str:
             "Cannot derive the ops reusable workflow ref: the manifest must set "
             "github.organization (or ecosystem.organization) and repository."
         )
-    return f"{org}/{ops_repo}/{_OPS_WORKFLOW}@{ref}"
+    return f"{org}/{ops_repo}/.github/workflows/{workflow}@{ref}"
 
 
-def generate_thin_caller(
-    name: str,
-    service: ServiceConfig,
-    branch: str,
-    env: str,
-    filename: str,
-    ops_ref: str,
-) -> str:
-    """Render one service's thin-caller workflow YAML."""
-    lines: list[str] = [
-        f'name: "Deploy: {name}"',
+def _header(name: str, kind: str) -> list[str]:
+    return [
+        f'name: "{kind}: {name}"',
         "",
         "# Thin caller - generated by `foundry generate callers` from the central",
         "# platform.json. The ops repo owns the pipeline; this repo names the service.",
         "",
+    ]
+
+
+def render_push_caller(
+    name: str, service: ServiceConfig, branch: str, env: str, filename: str, ops_ref: str,
+) -> str:
+    """Continuous deploy on push (static): delegate to the orchestrator deploy.yml."""
+    lines = _header(name, "Deploy")
+    lines += [
         "on:",
         "  push:",
         f"    branches: [{branch}]",
     ]
+    # Path-gate the push: the service's own subtree, its IaC stack, and this
+    # caller. Repo-root services (path ".") with no stack get no filter.
     path = service.effective_path
+    iac = (service.deploy.iac if service.deploy else {}) or {}
+    stack_path = iac.get("stackPath")
+    globs: list[str] = []
     if path and path != ".":
-        lines.append(f"    paths: ['{path}/**', '.github/workflows/{filename}']")
+        globs.append(f"'{path}/**'")
+    if stack_path and f"'{stack_path}/**'" not in globs:
+        globs.append(f"'{stack_path}/**'")
+    if globs:
+        globs.append(f"'.github/workflows/{filename}'")
+        lines.append("    paths: [" + ", ".join(globs) + "]")
     lines += [
         "  workflow_dispatch:",
         "",
@@ -101,35 +150,136 @@ def generate_thin_caller(
     return "\n".join(lines) + "\n"
 
 
+def render_release_caller(
+    name: str,
+    service: ServiceConfig,
+    handler: StrategyHandler,
+    env_options: list[str],
+    ops_ref: str,
+) -> str:
+    """Manual release (service/desktop): workflow_dispatch with a version. The
+    branch is chosen by the native 'run workflow from' selector. Orchestrator
+    targets add an environment choice; matrix targets add a `mandatory` flag."""
+    lines = _header(name, "Release")
+    lines += [
+        "on:",
+        "  workflow_dispatch:",
+        "    inputs:",
+        "      version:",
+        "        description: 'Release version (semver, e.g. 0.1.0 - the v-tag is derived)'",
+        "        required: true",
+        "        type: string",
+    ]
+    if handler.target == "orchestrator":
+        opts = ", ".join(env_options) or "prod"
+        lines += [
+            "      environment:",
+            "        description: 'Target environment'",
+            "        required: true",
+            f"        default: {env_options[0] if env_options else 'prod'}",
+            "        type: choice",
+            f"        options: [{opts}]",
+        ]
+    if handler.mandatory_input:
+        lines += [
+            "      mandatory:",
+            "        description: 'Required update? (force users to update)'",
+            "        required: false",
+            "        default: false",
+            "        type: boolean",
+        ]
+    lines += [
+        "",
+        "concurrency:",
+        f"  group: foundry-release-{name}",
+        "  cancel-in-progress: false",
+        "",
+        "jobs:",
+        "  release:",
+        f"    uses: {ops_ref}",
+        "    with:",
+        f"      service: {name}",
+        f"      version: {_IN_VERSION}",
+    ]
+    if handler.target == "orchestrator":
+        lines.append(f"      environment: {_IN_ENV}")
+    if handler.mandatory_input:
+        lines.append(f"      mandatory: {_IN_MANDATORY}")
+    lines.append("    secrets: inherit")
+    return "\n".join(lines) + "\n"
+
+
+def render_verify_caller(
+    name: str, service: ServiceConfig, branch: str, filename: str, ops_ref: str,
+) -> str:
+    """PR + push verify (compile/test only): delegate to the verify reusable."""
+    lines = _header(name, "Verify")
+    lines += [
+        "on:",
+        "  pull_request:",
+        "  push:",
+        f"    branches: [{branch}]",
+        "",
+        "permissions:",
+        "  contents: read",
+        "",
+        "jobs:",
+        "  verify:",
+        f"    uses: {ops_ref}",
+        "    with:",
+        f"      service: {name}",
+        "    secrets: inherit",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def generate_all_callers(
     manifest: ProjectManifest,
     env: str = "prod",
     *,
     ref: str = "main",
 ) -> dict[tuple[str, str], str]:
-    """Map ``(repo, filename) -> workflow YAML`` for every orchestrated service.
+    """Map ``(repo, filename) -> workflow YAML`` for every deployable service.
 
-    Services without their own ``repository`` fall back to the manifest's repo.
-    Repos with more than one orchestrated service get ``deploy-<service>.yml``;
-    a lone service gets the canonical ``deploy.yml``.
+    Per strategy (via ``STRATEGY_REGISTRY``): push strategies get a ``deploy.yml``
+    (``deploy-<svc>.yml`` when a repo has several); release strategies get a
+    ``release-<svc>.yml``; any strategy with a verify reusable also gets a
+    ``verify-<svc>.yml``. Services without their own ``repository`` fall back to
+    the manifest's repo.
     """
-    ops_ref = ops_reusable_ref(manifest, ref)
+    services = manifest.services_config
 
-    by_repo: dict[str, list[tuple[str, ServiceConfig]]] = {}
-    for name, svc in manifest.services_config.items():
-        if (svc.effective_strategy or "") not in ORCHESTRATED_STRATEGIES:
-            continue
-        repo = svc.repository or manifest.repository or "."
-        by_repo.setdefault(repo, []).append((name, svc))
+    # Count push-deploy services per repo (for deploy.yml vs deploy-<svc>.yml).
+    push_by_repo: dict[str, int] = {}
+    for name, svc in services.items():
+        h = STRATEGY_REGISTRY.get(svc.effective_strategy or "")
+        if h and h.trigger == "push":
+            repo = svc.repository or manifest.repository or "."
+            push_by_repo[repo] = push_by_repo.get(repo, 0) + 1
+
+    env_options = [n for n, c in manifest.environments.items() if c.enabled] or ["prod"]
 
     out: dict[tuple[str, str], str] = {}
-    for repo, svcs in by_repo.items():
-        multi = len(svcs) > 1
-        for name, svc in svcs:
-            filename = f"deploy-{name}.yml" if multi else "deploy.yml"
-            envs = manifest.resolve_environments(name)
-            branch = envs[env].branch if env in envs else "main"
-            out[(repo, filename)] = generate_thin_caller(
-                name, svc, branch, env, filename, ops_ref
-            )
+    for name, svc in services.items():
+        strat = svc.effective_strategy or ""
+        handler = STRATEGY_REGISTRY.get(strat)
+        if handler is None:
+            continue
+        repo = svc.repository or manifest.repository or "."
+        envs = manifest.resolve_environments(name)
+        branch = envs[env].branch if env in envs else "main"
+
+        deploy_ref = ops_reusable_ref(manifest, handler.workflow, ref)
+        if handler.trigger == "push":
+            filename = "deploy.yml" if push_by_repo.get(repo, 0) <= 1 else f"deploy-{name}.yml"
+            out[(repo, filename)] = render_push_caller(name, svc, branch, env, filename, deploy_ref)
+        else:  # release
+            filename = f"release-{name}.yml"
+            out[(repo, filename)] = render_release_caller(name, svc, handler, env_options, deploy_ref)
+
+        if handler.verify_workflow:
+            vfile = f"verify-{name}.yml"
+            verify_ref = ops_reusable_ref(manifest, handler.verify_workflow, ref)
+            out[(repo, vfile)] = render_verify_caller(name, svc, branch, vfile, verify_ref)
+
     return out
