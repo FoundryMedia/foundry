@@ -160,7 +160,7 @@ def render_release_caller(
     """Manual release (service/desktop): workflow_dispatch with a version. The
     branch is chosen by the native 'run workflow from' selector. Orchestrator
     targets add an environment choice; matrix targets add a `mandatory` flag."""
-    lines = _header(name, "Release")
+    lines = _header(name, "Deploy")
     lines += [
         "on:",
         "  workflow_dispatch:",
@@ -191,11 +191,11 @@ def render_release_caller(
     lines += [
         "",
         "concurrency:",
-        f"  group: foundry-release-{name}",
+        f"  group: foundry-deploy-{name}",
         "  cancel-in-progress: false",
         "",
         "jobs:",
-        "  release:",
+        "  deploy:",
         f"    uses: {ops_ref}",
         "    with:",
         f"      service: {name}",
@@ -212,8 +212,8 @@ def render_release_caller(
 def render_verify_caller(
     name: str, service: ServiceConfig, branch: str, filename: str, ops_ref: str,
 ) -> str:
-    """PR + push verify (compile/test only): delegate to the verify reusable."""
-    lines = _header(name, "Verify")
+    """PR + push build/test (compile only, no ship): delegate to the build reusable."""
+    lines = _header(name, "Build")
     lines += [
         "on:",
         "  pull_request:",
@@ -224,7 +224,7 @@ def render_verify_caller(
         "  contents: read",
         "",
         "jobs:",
-        "  verify:",
+        "  build:",
         f"    uses: {ops_ref}",
         "    with:",
         f"      service: {name}",
@@ -241,45 +241,35 @@ def generate_all_callers(
 ) -> dict[tuple[str, str], str]:
     """Map ``(repo, filename) -> workflow YAML`` for every deployable service.
 
-    Per strategy (via ``STRATEGY_REGISTRY``): push strategies get a ``deploy.yml``
-    (``deploy-<svc>.yml`` when a repo has several); release strategies get a
-    ``release-<svc>.yml``; any strategy with a verify reusable also gets a
-    ``verify-<svc>.yml``. Services without their own ``repository`` fall back to
-    the manifest's repo.
+    Standardized names — one verb per kind. The ship caller is always
+    ``deploy-<svc>.yml`` (display ``Deploy: <svc>``) whether it ships continuously
+    on push (static) or on a versioned dispatch (service/desktop). A strategy with
+    a build/verify reusable also gets ``build-<svc>.yml`` (display ``Build: <svc>``)
+    for PR/push checks. Services without their own ``repository`` fall back to the
+    manifest's repo.
     """
     services = manifest.services_config
-
-    # Count push-deploy services per repo (for deploy.yml vs deploy-<svc>.yml).
-    push_by_repo: dict[str, int] = {}
-    for name, svc in services.items():
-        h = STRATEGY_REGISTRY.get(svc.effective_strategy or "")
-        if h and h.trigger == "push":
-            repo = svc.repository or manifest.repository or "."
-            push_by_repo[repo] = push_by_repo.get(repo, 0) + 1
-
     env_options = [n for n, c in manifest.environments.items() if c.enabled] or ["prod"]
 
     out: dict[tuple[str, str], str] = {}
     for name, svc in services.items():
-        strat = svc.effective_strategy or ""
-        handler = STRATEGY_REGISTRY.get(strat)
+        handler = STRATEGY_REGISTRY.get(svc.effective_strategy or "")
         if handler is None:
             continue
         repo = svc.repository or manifest.repository or "."
         envs = manifest.resolve_environments(name)
         branch = envs[env].branch if env in envs else "main"
 
+        ship_file = f"deploy-{name}.yml"
         deploy_ref = ops_reusable_ref(manifest, handler.workflow, ref)
         if handler.trigger == "push":
-            filename = "deploy.yml" if push_by_repo.get(repo, 0) <= 1 else f"deploy-{name}.yml"
-            out[(repo, filename)] = render_push_caller(name, svc, branch, env, filename, deploy_ref)
-        else:  # release
-            filename = f"release-{name}.yml"
-            out[(repo, filename)] = render_release_caller(name, svc, handler, env_options, deploy_ref)
+            out[(repo, ship_file)] = render_push_caller(name, svc, branch, env, ship_file, deploy_ref)
+        else:  # versioned release dispatch — same "Deploy" verb
+            out[(repo, ship_file)] = render_release_caller(name, svc, handler, env_options, deploy_ref)
 
         if handler.verify_workflow:
-            vfile = f"verify-{name}.yml"
+            build_file = f"build-{name}.yml"
             verify_ref = ops_reusable_ref(manifest, handler.verify_workflow, ref)
-            out[(repo, vfile)] = render_verify_caller(name, svc, branch, vfile, verify_ref)
+            out[(repo, build_file)] = render_verify_caller(name, svc, branch, build_file, verify_ref)
 
     return out
