@@ -51,8 +51,9 @@ export default function DeployModelPage(): React.ReactElement {
           <strong>Multi-repo (orchestrated):</strong> the flow above, owned by{" "}
           <code>foundry-ops</code>. Today it implements the <code>static</code> strategy
           end-to-end; <code>service</code>, <code>desktop</code>, and <code>game-publisher</code>{" "}
-          are stubbed. The orchestrated pieces are currently hand-maintained in{" "}
-          <code>foundry-ops</code> (CLI generation of them is future work).
+          are stubbed. Thin callers are generated from the central manifest by{" "}
+          <a href="/docs/cli/generate"><code>foundry generate callers</code></a>; the reusable
+          workflow and orchestrator engine are hand-maintained in the ops repo.
         </blockquote>
       </div>
     </WikiLayout>

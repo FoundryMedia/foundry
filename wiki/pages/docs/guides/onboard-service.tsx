@@ -50,12 +50,12 @@ export default function OnboardServicePage(): React.ReactElement {
           <a href="/docs/iac/layout">IaC Layout</a>.
         </p>
 
-        <h2>3. Add the thin caller workflow</h2>
+        <h2>3. Generate the thin caller workflow</h2>
         <p>
-          In the service repo, add the small workflow that calls{" "}
-          <code>foundry-ops</code>{"'"}s reusable deploy workflow with{" "}
-          <code>secrets: inherit</code>. See <a href="/docs/deploy/thin-caller">Thin Caller</a> for
-          the exact file.
+          Run <a href="/docs/cli/generate"><code>foundry generate callers</code></a> against the
+          central manifest to emit the service{"'"}s thin-caller workflow into its repo — it
+          delegates to the ops repo{"'"}s reusable deploy workflow with{" "}
+          <code>secrets: inherit</code>. See <a href="/docs/deploy/thin-caller">Thin Caller</a>.
         </p>
 
         <h2>4. Create the tofu-runner role</h2>
