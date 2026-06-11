@@ -18,7 +18,7 @@ export default function CliOverviewPage(): React.ReactElement {
           </thead>
           <tbody>
             <tr><td><a href="/docs/cli/init"><code>foundry init</code></a></td><td>Create or refresh a platform</td><td><code>foundry.json</code>, <code>.foundry/</code></td></tr>
-            <tr><td><a href="/docs/cli/generate"><code>foundry generate</code></a></td><td>Generate pipeline, deploy scripts, and tfvars</td><td><code>.github/workflows/deploy.yml</code>, <code>ci/scripts/</code>, <code>ci/iac/&#123;env&#125;/</code></td></tr>
+            <tr><td><a href="/docs/cli/generate"><code>foundry generate</code></a></td><td>Generate pipeline, scripts, tfvars, and multi-repo thin callers</td><td><code>.github/workflows/deploy.yml</code>, <code>ci/scripts/</code>, <code>ci/iac/&#123;env&#125;/</code></td></tr>
             <tr><td><a href="/docs/cli/sync"><code>foundry sync</code></a></td><td>Reconcile manifest ↔ filesystem</td><td><code>.foundry/workspace.yml</code></td></tr>
             <tr><td><a href="/docs/cli/run"><code>foundry run</code></a></td><td>Run services locally (Services UI)</td><td>—</td></tr>
             <tr><td><a href="/docs/cli/db"><code>foundry db</code></a></td><td>Liquibase ops with auto SSH tunnels</td><td>—</td></tr>
