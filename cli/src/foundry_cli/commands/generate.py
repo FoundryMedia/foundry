@@ -218,7 +218,7 @@ def callers(
     if not results:
         click.echo(
             click.style(
-                "⚠️  No orchestrated (static/service) services — nothing to generate.",
+                "⚠️  No deployable services in the manifest — nothing to generate.",
                 fg="yellow",
             )
         )
