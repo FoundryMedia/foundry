@@ -116,16 +116,15 @@ def render_push_caller(
         f"    branches: [{branch}]",
     ]
     # Path-gate the push: the service's own subtree, its IaC stack, and this
-    # caller. Repo-root services (path ".") with no stack get no filter.
+    # caller. A repo-root service (path ".") IS the whole repo — no filter at
+    # all (a filter listing only the stackPath would wrongly exclude source).
     path = service.effective_path
     iac = (service.deploy.iac if service.deploy else {}) or {}
     stack_path = iac.get("stackPath")
-    globs: list[str] = []
     if path and path != ".":
-        globs.append(f"'{path}/**'")
-    if stack_path and f"'{stack_path}/**'" not in globs:
-        globs.append(f"'{stack_path}/**'")
-    if globs:
+        globs = [f"'{path}/**'"]
+        if stack_path and f"'{stack_path}/**'" not in globs:
+            globs.append(f"'{stack_path}/**'")
         globs.append(f"'.github/workflows/{filename}'")
         lines.append("    paths: [" + ", ".join(globs) + "]")
     lines += [
@@ -263,7 +262,13 @@ def generate_all_callers(
         handler = STRATEGY_REGISTRY.get(svc.effective_strategy or "")
         if handler is None:
             continue
-        repo = svc.repository or manifest.repository or "."
+        # Normalize the monorepo fallback to owner/repo so exclude_repos
+        # comparisons (always owner/repo form) match either way.
+        repo = svc.repository or (
+            f"{_manifest_org(manifest)}/{manifest.repository}"
+            if _manifest_org(manifest) and manifest.repository
+            else manifest.repository or "."
+        )
         if repo in excl:
             continue
         envs = manifest.resolve_environments(name)

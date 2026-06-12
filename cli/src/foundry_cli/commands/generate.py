@@ -169,6 +169,80 @@ def tfvars(ctx: click.Context, clean: bool) -> None:
         )
 
 
+@generate.command(name="static-iac")
+@click.option(
+    "--service", "service_name", required=True,
+    help="Service key in the central manifest (strategy must be `static`).",
+)
+@click.option(
+    "--manifest", "manifest_path",
+    type=click.Path(exists=True, dir_okay=False),
+    default=None,
+    help="Central platform manifest (default: <dir>/platform.json, else foundry.json).",
+)
+@click.option(
+    "--out", "out_dir",
+    type=click.Path(file_okay=False),
+    default=".",
+    help="Service repo checkout root. Files land under <out>/<deploy.iac.stackPath>/.",
+)
+@click.option("--env", "env_name", default="prod",
+              help="Environment whose branch the OIDC trust is scoped to (default: prod).")
+@click.pass_context
+def static_iac(
+    ctx: click.Context,
+    service_name: str,
+    manifest_path: str | None,
+    out_dir: str,
+    env_name: str,
+) -> None:
+    """Generate a static-site OpenTofu stack (S3 + CloudFront + ACM + Route53 + OIDC role).
+
+    One generator instead of hand-copied per-repo stacks. Reads the service's
+    deploy.iac (domain, hostedZoneId, bucket, wwwDomain, spaFallback, stateKey)
+    plus the platform ci.state block; writes the stack into the service repo at
+    deploy.iac.stackPath. Re-run to regenerate — manual edits are overwritten.
+    """
+    from foundry_cli.core.project.manifest import load_manifest_from_path
+    from foundry_cli.generators.static_iac import generate_static_iac
+
+    root = ctx.obj["directory"]
+    mp = Path(manifest_path) if manifest_path else root / "platform.json"
+    if not mp.exists():
+        mp = root / "foundry.json"
+    if not mp.exists():
+        raise FoundryError(
+            f"No central manifest found (looked for platform.json / foundry.json in {root})."
+        )
+
+    manifest = load_manifest_from_path(mp)
+    try:
+        spec, files = generate_static_iac(manifest, service_name, env_name)
+    except ValueError as e:
+        raise FoundryError(str(e)) from e
+
+    # stackPath must stay inside the checkout (it comes from the manifest, but
+    # the generator writes wherever it says — refuse absolute/.. escapes).
+    sp = Path(spec.stack_path)
+    if sp.is_absolute() or ".." in sp.parts:
+        raise FoundryError(f"deploy.iac.stackPath must be repo-relative: {spec.stack_path}")
+    stack_dir = Path(out_dir) / sp
+    stack_dir.mkdir(parents=True, exist_ok=True)
+    click.echo(click.style(
+        f"🏗️  Generating static-site IaC for '{service_name}' ({spec.domain})...",
+        fg="cyan", bold=True,
+    ))
+    for filename, content in sorted(files.items()):
+        target = stack_dir / filename
+        target.write_text(content, encoding="utf-8", newline="\n")
+        click.echo(click.style("  ✅ ", fg="green") + click.style(str(target), fg="white"))
+    click.echo(click.style(
+        f"\n🎉 {len(files)} files in {stack_dir}. Bootstrap: run the first "
+        "`tofu init && tofu apply` locally (creates the OIDC role CI assumes).",
+        fg="green",
+    ))
+
+
 @generate.command(name="callers")
 @click.option(
     "--manifest", "manifest_path",
