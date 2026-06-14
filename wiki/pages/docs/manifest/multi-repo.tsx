@@ -57,23 +57,23 @@ export default function MultiRepoPage(): React.ReactElement {
         <h2>Example</h2>
         <pre><code>{`"services": {
   "web": {
-    "repository": "FoundryMedia/foundry-app",
+    "repository": "your-org/web-app",
     "path": "app",
     "environments": { "prod": { "branch": "main" } },
     "stack": { "type": "frontend", "framework": "vite" },
     "deploy": { "strategy": "static" }
   },
   "launcher": {
-    "repository": "FoundryMedia/foundry-app",
+    "repository": "your-org/web-app",
     "stack": { "type": "frontend", "framework": "vite" },
     "deploy": { "strategy": "desktop" }
   }
 }`}</code></pre>
         <p>
-          Here <code>web</code> lives in the <code>app/</code> subdir of <code>foundry-app</code>{" "}
+          Here <code>web</code> lives in the <code>app/</code> subdir of <code>your-org/web-app</code>{" "}
           and deploys from <code>main</code>; <code>launcher</code> is the root of the same repo. A
           full worked example is the central{" "}
-          <a href="/docs/manifest/central">foundry-ops/platform.json</a>.
+          <a href="/docs/manifest/central">ops-repo <code>platform.json</code></a>.
         </p>
       </div>
     </WikiLayout>

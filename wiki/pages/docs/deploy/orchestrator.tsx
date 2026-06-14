@@ -2,12 +2,12 @@ import { WikiLayout } from "@/components/WikiLayout";
 
 export default function OrchestratorPage(): React.ReactElement {
   return (
-    <WikiLayout title="Orchestrator & Strategies" description="The foundry-ops orchestrator and per-strategy status.">
+    <WikiLayout title="Orchestrator & Strategies" description="The orchestrator and what each deploy strategy does.">
       <div className="prose-wiki max-w-3xl">
         <h1>Orchestrator &amp; Strategies</h1>
         <p>
-          The orchestrator (<code>foundry-ops/orchestrator/deploy.py</code>) is the single deploy
-          brain. It reads the central manifest, looks up one service, and dispatches on its{" "}
+          The orchestrator (the ops repo{"'"}s <code>orchestrator/deploy.py</code>) is the single
+          deploy brain. It reads the central manifest, looks up one service, and dispatches on its{" "}
           <code>deploy.strategy</code>. It uses only the Python standard library plus the{" "}
           <code>tofu</code>, <code>aws</code>, and shell tools available on the runner.
         </p>
@@ -22,21 +22,21 @@ export default function OrchestratorPage(): React.ReactElement {
           <a href="/docs/deploy/thin-caller">the thin-caller &amp; reusable workflow</a>.
         </p>
 
-        <h2>Strategy status</h2>
+        <h2>What each strategy does</h2>
         <table>
           <thead>
-            <tr><th>Strategy</th><th>Status</th><th>Behavior</th></tr>
+            <tr><th>Strategy</th><th>Behavior</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>static</code></td><td><span className="badge-green">implemented</span></td><td>Smart IaC → build → S3 sync → CloudFront invalidate</td></tr>
-            <tr><td><code>service</code></td><td><span className="badge-yellow">stubbed</span></td><td>Exits with a Phase-3 message (ECS engine not yet relocated here)</td></tr>
-            <tr><td><code>desktop</code></td><td><span className="badge-yellow">stubbed</span></td><td>Exits; the launcher still ships via a separate tag-release workflow</td></tr>
-            <tr><td><code>game-publisher</code></td><td><span className="badge-yellow">stubbed</span></td><td>Exits with a Phase-3 message (UE5 publish not yet relocated)</td></tr>
-            <tr><td><code>none</code></td><td>no-op</td><td>Logs that there is nothing to deploy and returns</td></tr>
+            <tr><td><code>static</code></td><td>Smart IaC → build → S3 sync → CloudFront invalidate</td></tr>
+            <tr><td><code>service</code></td><td>Containerized build/push → ECS Fargate rollout</td></tr>
+            <tr><td><code>desktop</code></td><td>Signed desktop installers + an updater manifest</td></tr>
+            <tr><td><code>game-publisher</code></td><td>Game build / publish pipeline</td></tr>
+            <tr><td><code>none</code></td><td>No-op — logs that there is nothing to deploy and returns</td></tr>
           </tbody>
         </table>
 
-        <h2>The static path (implemented)</h2>
+        <h2>The static path</h2>
         <ol>
           <li>
             <strong>Smart IaC.</strong> <code>tofu init</code>, then{" "}
@@ -62,12 +62,6 @@ export default function OrchestratorPage(): React.ReactElement {
           Environment{"'"}s required reviewers, driven by{" "}
           <a href="/docs/manifest/environments"><code>autoApprove</code></a> — not by the script.
         </p>
-
-        <blockquote>
-          The stubbed strategies are tracked as &ldquo;Phase 3&rdquo; — relocating the existing
-          ECS / Tauri / UE5 deploy engines into <code>foundry-ops</code> for parity. Until then,
-          only <code>static</code> deploys through this orchestrator.
-        </blockquote>
       </div>
     </WikiLayout>
   );

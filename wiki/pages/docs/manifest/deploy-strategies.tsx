@@ -7,10 +7,10 @@ export default function DeployStrategiesPage(): React.ReactElement {
         <h1>Deploy Strategies</h1>
         <p>
           Every deployable service has a <code>deploy.strategy</code>. It is the{" "}
-          <strong>single selector the orchestrator dispatches on</strong> — it absorbed the
-          concept that <code>foundry-ops</code> previously called <code>kind</code>. The
-          convention engine derives the other <code>deploy</code> fields (Dockerfile, build
-          context, secrets) from <code>stack</code> + <code>scope</code>.
+          <strong>single selector the orchestrator dispatches on</strong> — it absorbed what
+          earlier schema versions called <code>kind</code>. The convention engine derives the
+          other <code>deploy</code> fields (Dockerfile, build context, secrets) from{" "}
+          <code>stack</code> + <code>scope</code>.
         </p>
 
         <h2>The enum</h2>
@@ -22,7 +22,7 @@ export default function DeployStrategiesPage(): React.ReactElement {
             <tr><td><code>service</code></td><td>Containerized — ECS Fargate</td></tr>
             <tr><td><code>static</code></td><td>S3 / CDN static hosting (SPA or static site)</td></tr>
             <tr><td><code>desktop</code></td><td>Tauri desktop release — signed installers + updater manifest</td></tr>
-            <tr><td><code>game-publisher</code></td><td>UE5 game build / publish</td></tr>
+            <tr><td><code>game-publisher</code></td><td>Game build / publish</td></tr>
             <tr><td><code>none</code></td><td>Not deployed (libraries / packages)</td></tr>
           </tbody>
         </table>
@@ -51,16 +51,6 @@ export default function DeployStrategiesPage(): React.ReactElement {
             <tr><td><code>iac</code></td><td>all</td><td>Provider-specific deploy config passed through to IaC (compute, ALB, stack path, domain, …)</td></tr>
           </tbody>
         </table>
-
-        <h2>Implementation status</h2>
-        <blockquote>
-          The <code>deploy.strategy</code> enum is fully defined in the schema, but the{" "}
-          <a href="/docs/deploy/orchestrator">orchestrator</a> only implements{" "}
-          <code>static</code> end-to-end today. <code>service</code>, <code>desktop</code>, and{" "}
-          <code>game-publisher</code> are stubbed pending engine relocation — see{" "}
-          <a href="/docs/deploy/orchestrator">Orchestrator &amp; Strategies</a> for the live
-          status table.
-        </blockquote>
       </div>
     </WikiLayout>
   );

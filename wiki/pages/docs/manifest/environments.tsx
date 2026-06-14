@@ -53,7 +53,7 @@ test  → qa`}</code></pre>
           whose repo deploys prod from <code>main</code>:
         </p>
         <pre><code>{`"web": {
-  "repository": "FoundryMedia/foundry-app",
+  "repository": "your-org/web-app",
   "environments": { "prod": { "branch": "main" } },
   "deploy": { "strategy": "static" }
 }`}</code></pre>

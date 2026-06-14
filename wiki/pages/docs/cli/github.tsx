@@ -47,10 +47,10 @@ export default function GitHubCommandPage(): React.ReactElement {
         </p>
 
         <h2>Naming Convention</h2>
-        <pre><code>{`Platform name:  "An Average Platform"
-Repository:     an-average-platform      (primary, ★)
-Prefix:         aap
-Satellites:     aap-api-lib, aap-billing-service, ...`}</code></pre>
+        <pre><code>{`Platform name:  "My Platform"
+Repository:     my-platform              (primary, ★)
+Prefix:         mp
+Satellites:     mp-api-lib, mp-billing-service, ...`}</code></pre>
 
         <h2>Token Security</h2>
         <p>

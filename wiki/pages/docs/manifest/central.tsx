@@ -2,13 +2,13 @@ import { WikiLayout } from "@/components/WikiLayout";
 
 export default function CentralManifestPage(): React.ReactElement {
   return (
-    <WikiLayout title="Central Manifest" description="The multi-repo manifest in foundry-ops.">
+    <WikiLayout title="Central Manifest" description="The multi-repo manifest in the ops repo.">
       <div className="prose-wiki max-w-3xl">
-        <h1>Central Manifest — foundry-ops/platform.json</h1>
+        <h1>Central Manifest — the ops-repo <code>platform.json</code></h1>
         <p>
-          In a multi-repo platform, the authoritative manifest lives in <code>foundry-ops</code>{" "}
-          as <code>platform.json</code>. It is an ordinary v0.7.0 manifest, but its services point
-          at other repositories via <code>repository</code> / <code>path</code>. Individual service
+          In a multi-repo platform, the authoritative manifest lives in the ops repo as{" "}
+          <code>platform.json</code>. It is an ordinary v0.7.0 manifest, but its services point at
+          other repositories via <code>repository</code> / <code>path</code>. Individual service
           repos carry no manifest — only a <a href="/docs/deploy/thin-caller">thin caller</a>{" "}
           workflow.
         </p>
@@ -36,7 +36,7 @@ export default function CentralManifestPage(): React.ReactElement {
 
         <h2>Example entry</h2>
         <pre><code>{`"web": {
-  "repository": "FoundryMedia/foundry-app",
+  "repository": "your-org/web-app",
   "path": "app",
   "environments": { "prod": { "branch": "main" } },
   "scope": "public",
@@ -48,33 +48,33 @@ export default function CentralManifestPage(): React.ReactElement {
     "dependsOn": ["iac"],
     "iac": {
       "stackPath": "ci/iac/web",
-      "domain": "foundryplatform.app",
+      "domain": "app.example.com",
       "distDir": "app/dist",
       "region": "us-east-2",
-      "roleArn": "arn:aws:iam::<acct>:role/foundry-app-web-tofu-runner",
+      "roleArn": "arn:aws:iam::<acct>:role/web-tofu-runner",
       "bucketOutput": "bucket_name",
       "distributionIdOutput": "distribution_id",
-      "buildEnv": { "VITE_TARGET": "web", "VITE_API_BASE_URL": "https://api.foundryplatform.app" }
+      "buildEnv": { "VITE_TARGET": "web", "VITE_API_BASE_URL": "https://api.example.com" }
     }
   }
 }`}</code></pre>
 
-        <h2>Services it currently describes</h2>
+        <h2>Example services</h2>
+        <p>
+          A single manifest can mix services across repos, including several deployables out of one
+          repo (here <code>web</code> and <code>launcher</code> share a repo, with <code>web</code>{" "}
+          in a subdirectory and <code>launcher</code> at the root):
+        </p>
         <table>
           <thead>
             <tr><th>Service</th><th>Repo / path</th><th>Strategy</th></tr>
           </thead>
           <tbody>
-            <tr><td><code>web</code></td><td><code>foundry-app</code> / <code>app</code></td><td><code>static</code></td></tr>
-            <tr><td><code>launcher</code></td><td><code>foundry-app</code> / root</td><td><code>desktop</code></td></tr>
-            <tr><td><code>wiki</code></td><td><code>foundry</code> / <code>wiki</code></td><td><code>static</code></td></tr>
+            <tr><td><code>web</code></td><td><code>your-org/web-app</code> / <code>app</code></td><td><code>static</code></td></tr>
+            <tr><td><code>launcher</code></td><td><code>your-org/web-app</code> / root</td><td><code>desktop</code></td></tr>
+            <tr><td><code>docs</code></td><td><code>your-org/docs</code> / root</td><td><code>static</code></td></tr>
           </tbody>
         </table>
-        <blockquote>
-          Only <code>static</code> (<code>web</code>, <code>wiki</code>) deploys end-to-end today.{" "}
-          <code>launcher</code> is declared with <code>desktop</code> but the orchestrator{"'"}s
-          desktop path is still stubbed — see <a href="/docs/deploy/orchestrator">Orchestrator</a>.
-        </blockquote>
       </div>
     </WikiLayout>
   );

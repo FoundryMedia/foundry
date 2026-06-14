@@ -35,8 +35,8 @@ export default function HomePage(): React.ReactElement {
           Foundry is a declarative, manifest-driven framework for building and operating
           platforms. One manifest describes the platform — its services, stacks, environments,
           and how each service deploys. The <code>foundry</code> CLI scaffolds it, runs it
-          locally, and generates its CI/CD; <code>foundry-ops</code> orchestrates deploys;
-          <code>foundry-iac</code> holds the shared infrastructure modules.
+          locally, and generates its CI/CD; a dedicated <strong>ops repo</strong> orchestrates
+          deploys; an <strong>infrastructure repo</strong> holds the shared modules.
         </p>
       </div>
 
@@ -51,7 +51,7 @@ export default function HomePage(): React.ReactElement {
         <FeatureCard
           icon={Network}
           title="Repo Topology"
-          description="The three-repo model: manifest is the brain, foundry-ops owns CI/CD, foundry-iac holds modules."
+          description="The three-repo model: the manifest is the brain, the ops repo owns CI/CD, the infrastructure repo holds modules."
           href="/docs/concepts/topology"
         />
         <FeatureCard
@@ -69,13 +69,13 @@ export default function HomePage(): React.ReactElement {
         <FeatureCard
           icon={Ship}
           title="Deploy Model"
-          description="Thin caller → foundry-ops reusable workflow → orchestrator → smart IaC (plan, apply on change)."
+          description="Thin caller → ops-repo reusable workflow → orchestrator → smart IaC (plan, apply on change)."
           href="/docs/deploy/model"
         />
         <FeatureCard
           icon={Server}
           title="Infrastructure"
-          description="Shared foundry-iac modules + control-plane stack, plus per-repo ci/iac app-edge stacks."
+          description="Shared infrastructure-repo modules + control-plane stack, plus per-repo ci/iac app-edge stacks."
           href="/docs/iac/layout"
         />
       </div>
@@ -89,7 +89,7 @@ export default function HomePage(): React.ReactElement {
           unified <code>deploy.strategy</code>.{" "}
           <code>foundry init</code> currently scaffolds a single-repo v0.5.0 manifest — the
           multi-repo fields are additive and used by the central{" "}
-          <Link href="/docs/manifest/central">foundry-ops/platform.json</Link>.
+          <Link href="/docs/manifest/central">ops-repo <code>platform.json</code></Link>.
         </p>
       </div>
     </WikiLayout>

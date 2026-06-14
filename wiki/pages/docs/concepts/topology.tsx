@@ -17,46 +17,54 @@ export default function TopologyPage(): React.ReactElement {
           </thead>
           <tbody>
             <tr>
-              <td><code>foundry</code> (+ the manifest)</td>
+              <td>The <code>foundry</code> CLI (+ the manifest)</td>
               <td>The brain</td>
               <td>The CLI, the manifest schema, and — in a monorepo — the platform{"'"}s own <code>foundry.json</code>.</td>
             </tr>
             <tr>
-              <td><code>foundry-ops</code></td>
+              <td>The <strong>ops repo</strong></td>
               <td>CI/CD owner &amp; library</td>
               <td>The central multi-repo manifest (<code>platform.json</code>), the orchestrator, and the reusable deploy workflow that service repos call.</td>
             </tr>
             <tr>
-              <td><code>foundry-iac</code></td>
+              <td>The <strong>infrastructure repo</strong></td>
               <td>Infrastructure modules</td>
               <td>Shared OpenTofu modules and the control-plane stack. Per-service app-edge infra lives in each repo{"'"}s <code>ci/iac/</code>.</td>
             </tr>
           </tbody>
         </table>
+        <p>
+          Foundry doesn{"'"}t mandate what you name these repos — name them whatever fits your
+          org. A common convention is <code>&lt;platform&gt;-ops</code> and{" "}
+          <code>&lt;platform&gt;-iac</code>. What matters is the split: <strong>one</strong> repo
+          owns the orchestration layer and <strong>one</strong> owns the infrastructure. When a
+          platform moves from a single repo to multiple repos (or starts multi-repo), this is how
+          the concerns divide.
+        </p>
 
         <h2>Manifest is the brain</h2>
         <p>
           Everything flows from a manifest. It declares WHAT the platform is — services, stacks,
           environments, and how each service deploys. In a monorepo that manifest is the repo{"'"}s
-          <code>foundry.json</code>. In a multi-repo platform the authoritative manifest is{" "}
-          <a href="/docs/manifest/central">foundry-ops/platform.json</a>, and individual service
-          repos carry no manifest of their own — only a thin caller workflow.
+          <code>foundry.json</code>. In a multi-repo platform the authoritative manifest is the
+          ops repo{"'"}s <a href="/docs/manifest/central"><code>platform.json</code></a>, and
+          individual service repos carry no manifest of their own — only a thin caller workflow.
         </p>
 
-        <h2>foundry-ops is the CI/CD owner</h2>
+        <h2>The ops repo is the CI/CD owner</h2>
         <p>
           Deploy logic lives in one place. A service repo{"'"}s deploy workflow is a{" "}
-          <a href="/docs/deploy/thin-caller">thin caller</a> that invokes{" "}
-          <code>foundry-ops</code>{"'"}s reusable <code>workflow_call</code> workflow. That workflow
-          checks out the caller repo, reads <code>platform.json</code>, and runs the{" "}
+          <a href="/docs/deploy/thin-caller">thin caller</a> that invokes the ops repo{"'"}s
+          reusable <code>workflow_call</code> workflow. That workflow checks out the caller repo,
+          reads <code>platform.json</code>, and runs the{" "}
           <a href="/docs/deploy/orchestrator">orchestrator</a>. No deploy logic is duplicated
           across service repos.
         </p>
 
-        <h2>foundry-iac holds the modules</h2>
+        <h2>The infrastructure repo holds the modules</h2>
         <p>
           Shared infrastructure — VPC, ECS, RDS, ALB, CloudFront, WAF, and more — lives as
-          reusable OpenTofu modules in <code>foundry-iac</code>, alongside the control-plane stack
+          reusable OpenTofu modules in the infrastructure repo, alongside the control-plane stack
           that provisions the always-on platform. Each app{"'"}s edge infrastructure (its S3 bucket
           and CloudFront distribution for a static site, for example) lives in that repo{"'"}s own{" "}
           <code>ci/iac/</code> stack. See <a href="/docs/iac/layout">IaC Layout</a>.

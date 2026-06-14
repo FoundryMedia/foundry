@@ -2,7 +2,7 @@ import { WikiLayout } from "@/components/WikiLayout";
 
 export default function ThinCallerPage(): React.ReactElement {
   return (
-    <WikiLayout title="Thin Caller & Reusable Workflow" description="How a service repo invokes the foundry-ops deploy workflow.">
+    <WikiLayout title="Thin Caller & Reusable Workflow" description="How a service repo invokes the ops repo's deploy workflow.">
       <div className="prose-wiki max-w-3xl">
         <h1>Thin Caller &amp; Reusable Workflow</h1>
         <p>
@@ -17,7 +17,8 @@ export default function ThinCallerPage(): React.ReactElement {
 
         <h2>The reusable workflow</h2>
         <p>
-          <code>foundry-ops/.github/workflows/deploy.yml</code> is a reusable workflow. Its inputs:
+          The ops repo{"'"}s <code>.github/workflows/deploy.yml</code> is a reusable workflow. Its
+          inputs:
         </p>
         <table>
           <thead>
@@ -32,8 +33,8 @@ export default function ThinCallerPage(): React.ReactElement {
         <h2>What it does</h2>
         <ol>
           <li>Checks out the caller repo.</li>
-          <li>Mints a short-lived GitHub App token scoped to read <code>foundry-ops</code>.</li>
-          <li>Checks out <code>foundry-ops</code> (manifest + orchestrator).</li>
+          <li>Mints a short-lived GitHub App token scoped to read the ops repo.</li>
+          <li>Checks out the ops repo (manifest + orchestrator).</li>
           <li>Reads <code>platform.json</code> to resolve the service{"'"}s AWS <code>roleArn</code> and <code>region</code>.</li>
           <li>Sets up Node + corepack + OpenTofu.</li>
           <li>Configures AWS credentials via OIDC (assumes the resolved role — no long-lived keys).</li>
@@ -67,7 +68,7 @@ permissions:
 
 jobs:
   deploy:
-    uses: FoundryMedia/foundry-ops/.github/workflows/deploy.yml@main
+    uses: your-org/your-ops-repo/.github/workflows/deploy.yml@main
     with:
       service: web
       environment: prod

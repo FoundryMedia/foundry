@@ -6,20 +6,19 @@ export default function OnboardServicePage(): React.ReactElement {
       <div className="prose-wiki max-w-3xl">
         <h1>Onboard a New Repo/Service</h1>
         <p>
-          This is the happy path for adding a new <strong>static</strong> service (the strategy the
-          orchestrator implements today) to the multi-repo, orchestrated deploy. Four pieces wire
-          it together.
+          This is the happy path for adding a new <strong>static</strong> service to the
+          multi-repo, orchestrated deploy. Four pieces wire it together.
         </p>
 
         <h2>1. Add a service to the central manifest</h2>
         <p>
-          In <a href="/docs/manifest/central"><code>foundry-ops/platform.json</code></a>, add an
+          In the <a href="/docs/manifest/central">ops-repo <code>platform.json</code></a>, add an
           entry with <code>repository</code> / <code>path</code>, a <code>stack</code>, a{" "}
           <code>deploy.strategy</code>, the environment→branch map, and a <code>deploy.iac</code>{" "}
           block:
         </p>
         <pre><code>{`"docs": {
-  "repository": "FoundryMedia/my-repo",
+  "repository": "your-org/my-repo",
   "path": ".",
   "environments": { "prod": { "branch": "main" } },
   "scope": "public",
@@ -71,12 +70,6 @@ export default function OnboardServicePage(): React.ReactElement {
           The <a href="/docs/deploy/orchestrator">orchestrator</a> runs smart IaC on the stack,
           builds, syncs to S3, and invalidates CloudFront.
         </p>
-
-        <blockquote>
-          Only <code>static</code> works end-to-end through the orchestrator today.{" "}
-          <code>service</code>, <code>desktop</code>, and <code>game-publisher</code> are stubbed —
-          see <a href="/docs/deploy/orchestrator">Orchestrator &amp; Strategies</a>.
-        </blockquote>
       </div>
     </WikiLayout>
   );

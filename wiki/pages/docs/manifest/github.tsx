@@ -28,10 +28,10 @@ export default function GitHubBlockPage(): React.ReactElement {
           The primary platform repo is matched by its full name (the slugified platform name).
           Satellite repos are matched by the <code>&#123;prefix&#125;-*</code> pattern.
         </p>
-        <pre><code>{`Platform name:  "An Average Platform"
-Repository:     an-average-platform      (primary, ★)
-Prefix:         aap
-Satellites:     aap-api-lib, aap-billing-service, ...`}</code></pre>
+        <pre><code>{`Platform name:  "My Platform"
+Repository:     my-platform              (primary, ★)
+Prefix:         mp
+Satellites:     mp-api-lib, mp-billing-service, ...`}</code></pre>
         <p>
           Test discovery against the live org with{" "}
           <a href="/docs/cli/github">foundry github discover</a>, which reads{" "}
@@ -46,11 +46,11 @@ Satellites:     aap-api-lib, aap-billing-service, ...`}</code></pre>
 
         <h2>Example</h2>
         <pre><code>{`"github": {
-  "organization": "FoundryMedia",
-  "prefix": "foundry",
+  "organization": "your-org",
+  "prefix": "mp",
   "apiLib": {
-    "repository": "aap-api-lib",
-    "groupId": "com.thisistheaverage"
+    "repository": "mp-api-lib",
+    "groupId": "com.example"
   }
 }`}</code></pre>
       </div>
