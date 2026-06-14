@@ -15,9 +15,9 @@ export default function ManifestOverviewPage(): React.ReactElement {
 
         <blockquote>
           In a monorepo the manifest is the repo{"'"}s own <code>foundry.json</code>. In a
-          multi-repo platform the authoritative manifest is{" "}
-          <a href="/docs/manifest/central">foundry-ops/platform.json</a>, and service repos carry
-          no manifest of their own.
+          multi-repo platform the authoritative manifest is the{" "}
+          <a href="/docs/manifest/central">ops-repo <code>platform.json</code></a>, and service
+          repos carry no manifest of their own.
         </blockquote>
 
         <h2>Schema version</h2>
@@ -57,9 +57,9 @@ export default function ManifestOverviewPage(): React.ReactElement {
 
         <h2>Name → repository → prefix</h2>
         <p>The platform name drives two derived values (both overridable):</p>
-        <pre><code>{`name: "Acme Cloud Platform"
-  → repository: "acme-cloud-platform"   (slugified)
-  → prefix:     "aap"                   (first letter of each word, min 2 chars)`}</code></pre>
+        <pre><code>{`name: "My Platform"
+  → repository: "my-platform"   (slugified)
+  → prefix:     "mp"            (first letter of each word, min 2 chars)`}</code></pre>
         <p>
           The prefix is used for AWS resource naming and for discovering satellite repos by the{" "}
           <code>&#123;prefix&#125;-*</code> pattern.

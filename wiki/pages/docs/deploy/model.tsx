@@ -7,16 +7,15 @@ export default function DeployModelPage(): React.ReactElement {
         <h1>Deploy Model</h1>
         <p>
           A multi-repo deploy is manifest-driven and orchestrated centrally. A service repo holds
-          almost no deploy logic — it just calls into <code>foundry-ops</code>, which owns the
-          pipeline.
+          almost no deploy logic — it just calls into the ops repo, which owns the pipeline.
         </p>
 
         <h2>The flow</h2>
         <pre><code>{`service-repo push
   → thin caller workflow (in the service repo)
-    → foundry-ops reusable deploy.yml  (workflow_call)
+    → ops-repo reusable deploy.yml  (workflow_call)
       → orchestrator (orchestrator/deploy.py)
-        → reads foundry-ops/platform.json, dispatches on deploy.strategy
+        → reads the ops repo's platform.json, dispatches on deploy.strategy
           → smart IaC: tofu plan → apply ONLY on change
           → build
           → publish (e.g. S3 sync + CloudFront invalidate for static)`}</code></pre>
@@ -27,10 +26,10 @@ export default function DeployModelPage(): React.ReactElement {
             <tr><th>Piece</th><th>Lives in</th><th>Role</th></tr>
           </thead>
           <tbody>
-            <tr><td>Platform shape</td><td><a href="/docs/manifest/central"><code>foundry-ops/platform.json</code></a></td><td>Declares services, strategies, IaC targets</td></tr>
-            <tr><td><a href="/docs/deploy/thin-caller">Thin caller</a></td><td>Each service repo</td><td>Minimal workflow that calls foundry-ops</td></tr>
-            <tr><td>Reusable workflow + <a href="/docs/deploy/orchestrator">orchestrator</a></td><td><code>foundry-ops</code></td><td>Checkout, credentials, and the deploy engine</td></tr>
-            <tr><td>Infrastructure</td><td><a href="/docs/iac/layout"><code>foundry-iac</code></a> + per-repo <code>ci/iac</code></td><td>Shared control plane + app-edge stacks</td></tr>
+            <tr><td>Platform shape</td><td><a href="/docs/manifest/central">ops-repo <code>platform.json</code></a></td><td>Declares services, strategies, IaC targets</td></tr>
+            <tr><td><a href="/docs/deploy/thin-caller">Thin caller</a></td><td>Each service repo</td><td>Minimal workflow that calls the ops repo</td></tr>
+            <tr><td>Reusable workflow + <a href="/docs/deploy/orchestrator">orchestrator</a></td><td>The ops repo</td><td>Checkout, credentials, and the deploy engine</td></tr>
+            <tr><td>Infrastructure</td><td><a href="/docs/iac/layout">the infrastructure repo</a> + per-repo <code>ci/iac</code></td><td>Shared control plane + app-edge stacks</td></tr>
           </tbody>
         </table>
 
@@ -42,16 +41,14 @@ export default function DeployModelPage(): React.ReactElement {
           and idempotent. Details in <a href="/docs/deploy/orchestrator">Orchestrator &amp; Strategies</a>.
         </p>
 
-        <h2>Two deploy models coexist today</h2>
+        <h2>Two deploy models</h2>
         <blockquote>
           <strong>Monorepo (in-repo):</strong> <a href="/docs/cli/generate"><code>foundry generate</code></a>{" "}
           emits a self-contained pipeline + <code>ci/scripts/</code> that run inside the same repo
           as the manifest. This is what a single-repo platform uses.
           <br /><br />
-          <strong>Multi-repo (orchestrated):</strong> the flow above, owned by{" "}
-          <code>foundry-ops</code>. Today it implements the <code>static</code> strategy
-          end-to-end; <code>service</code>, <code>desktop</code>, and <code>game-publisher</code>{" "}
-          are stubbed. Thin callers are generated from the central manifest by{" "}
+          <strong>Multi-repo (orchestrated):</strong> the flow above, owned by the ops repo. Thin
+          callers are generated from the central manifest by{" "}
           <a href="/docs/cli/generate"><code>foundry generate callers</code></a>; the reusable
           workflow and orchestrator engine are hand-maintained in the ops repo.
         </blockquote>

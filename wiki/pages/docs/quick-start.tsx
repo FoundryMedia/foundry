@@ -92,8 +92,8 @@ foundry run dev --migrate-db`}</code></pre>
           A service that lives in a different repository declares <code>repository</code>{" "}
           (<code>owner/repo</code>) and an optional <code>path</code>. Omit both and the service is
           treated as monorepo (<code>apps/&#123;type&#125;/&#123;name&#125;</code>). In practice the
-          central multi-repo manifest lives in{" "}
-          <a href="/docs/manifest/central">foundry-ops/platform.json</a>. See{" "}
+          central multi-repo manifest lives in the{" "}
+          <a href="/docs/manifest/central">ops-repo <code>platform.json</code></a>. See{" "}
           <a href="/docs/manifest/multi-repo">Multi-repo: repository &amp; path</a>.
         </p>
       </div>

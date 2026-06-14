@@ -26,13 +26,13 @@ export default function TfvarsPage(): React.ReactElement {
 
         <h2>Template variables</h2>
         <p>Values in the IaC config can reference these, resolved at generation time:</p>
-        <pre><code>{`{prefix}        e.g. aap
+        <pre><code>{`{prefix}        e.g. mp
 {env}           e.g. prod
 {name_prefix}   {prefix}-{env}
 {account_id}    from STS
 {region}        AWS region
-{iac_name}      IaC service key (e.g. platform-microlith-service)
-{manifest_name} manifest service key (e.g. platform-microlith)`}</code></pre>
+{iac_name}      IaC service key (e.g. api-service)
+{manifest_name} manifest service key (e.g. api)`}</code></pre>
 
         <h2>Output</h2>
         <p>

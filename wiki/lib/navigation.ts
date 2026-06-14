@@ -33,7 +33,7 @@ export const NAV_SECTIONS: NavSection[] = [
       { label: "Multi-repo: repository & path", href: "/docs/manifest/multi-repo" },
       { label: "Deploy Strategies", href: "/docs/manifest/deploy-strategies" },
       { label: "Environments & Branches", href: "/docs/manifest/environments" },
-      { label: "Central Manifest (foundry-ops)", href: "/docs/manifest/central" },
+      { label: "Central Manifest (ops repo)", href: "/docs/manifest/central" },
       { label: "GitHub & Cross-Repo", href: "/docs/manifest/github" },
     ],
   },

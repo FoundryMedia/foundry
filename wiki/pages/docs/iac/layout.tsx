@@ -2,18 +2,18 @@ import { WikiLayout } from "@/components/WikiLayout";
 
 export default function IacLayoutPage(): React.ReactElement {
   return (
-    <WikiLayout title="IaC Layout" description="How infrastructure is split between foundry-iac and per-repo stacks.">
+    <WikiLayout title="IaC Layout" description="How infrastructure is split between the infrastructure repo and per-repo stacks.">
       <div className="prose-wiki max-w-3xl">
         <h1>IaC Layout</h1>
         <p>
           Foundry uses OpenTofu and splits infrastructure into two layers: a shared{" "}
-          <strong>control plane</strong> with reusable modules in <code>foundry-iac</code>, and
+          <strong>control plane</strong> with reusable modules in the infrastructure repo, and
           per-repo <strong>app-edge</strong> stacks in each service{"'"}s <code>ci/iac/</code>.
         </p>
 
-        <h2>foundry-iac — shared modules + control plane</h2>
+        <h2>The infrastructure repo — shared modules + control plane</h2>
         <p>
-          <code>foundry-iac</code> holds reusable OpenTofu modules and the control-plane stack that
+          The infrastructure repo holds reusable OpenTofu modules and the control-plane stack that
           provisions the always-on platform (VPC, ECS cluster + Fargate services, RDS, ALB,
           CloudFront + WAF, bastion, OIDC roles). Module categories include:
         </p>
@@ -49,9 +49,8 @@ export default function IacLayoutPage(): React.ReactElement {
           app-edge stack via <code>deploy.iac.stackPath</code> and names the outputs to read
           (<code>bucketOutput</code>, <code>distributionIdOutput</code>). The{" "}
           <a href="/docs/deploy/orchestrator">orchestrator</a> plans/applies that stack (smart
-          IaC), reads those outputs, and uses them to publish the build. The shared{" "}
-          <code>foundry-iac</code> control plane is applied separately and consumed by the modules
-          themselves.
+          IaC), reads those outputs, and uses them to publish the build. The shared control plane
+          in the infrastructure repo is applied separately and consumed by the modules themselves.
         </p>
       </div>
     </WikiLayout>

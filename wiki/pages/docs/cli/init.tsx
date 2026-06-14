@@ -61,8 +61,8 @@ export default function InitCommandPage(): React.ReactElement {
 
         <h2>Prefix derivation</h2>
         <p>The platform prefix is derived from the first letter of each word in the name:</p>
-        <pre><code>{`"Acme Cloud Platform" → prefix "aap"
-"My Cool Service"     → prefix "mcs"`}</code></pre>
+        <pre><code>{`"My Platform"      → prefix "mp"
+"My Cool Service"  → prefix "mcs"`}</code></pre>
         <p>Override it with a top-level <code>prefix</code> (minimum 2 characters).</p>
 
         <h2>Structure</h2>
