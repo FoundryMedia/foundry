@@ -34,6 +34,8 @@ from foundry_cli.commands.generate import generate
 from foundry_cli.commands.config_cmd import config
 from foundry_cli.commands.sync import sync
 from foundry_cli.commands.db import db
+from foundry_cli.commands.auth_cmd import login, logout
+from foundry_cli.commands.build_cmd import build
 
 def register_commands(root: click.Group) -> None:
     root.add_command(run)
@@ -43,6 +45,9 @@ def register_commands(root: click.Group) -> None:
     root.add_command(config)
     root.add_command(sync)
     root.add_command(db)
+    root.add_command(login)
+    root.add_command(logout)
+    root.add_command(build)
 
 
 def print_header(local: str) -> None:

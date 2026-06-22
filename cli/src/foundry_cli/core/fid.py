@@ -1,0 +1,99 @@
+"""Foundry platform HTTP client (auth-efga issuer + fid API).
+
+Stdlib-only (urllib + json), mirroring core/github.py. Two hosts:
+  - AUTH_BASE  https://auth.foundryplatform.app  — the token issuer (desktop bearer flow)
+  - API_BASE   https://api.foundryplatform.app   — fid (FCM build endpoints, ...)
+
+Both speak the JsonApiResponse envelope ``{"data": ..., "errors": [{code,message}]}``; the
+helpers below unwrap ``data`` and raise :class:`FoundryError` (with the server's message) on
+failure. Presigned R2 PUTs are plain (no auth, no envelope) and stream from disk.
+
+Override the hosts with FOUNDRY_AUTH_BASE / FOUNDRY_API_BASE (local dev).
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import urllib.error
+import urllib.request
+from typing import Any
+
+from foundry_cli.core.errors import FoundryError
+
+AUTH_BASE = os.environ.get("FOUNDRY_AUTH_BASE", "https://auth.foundryplatform.app")
+API_BASE = os.environ.get("FOUNDRY_API_BASE", "https://api.foundryplatform.app")
+_UA = "foundry-cli"
+
+
+def _unwrap(envelope: Any) -> Any:
+    if isinstance(envelope, dict) and "data" in envelope:
+        return envelope["data"]
+    return envelope
+
+
+def _send(url: str, *, method: str, token: str | None, body: dict | None, timeout: int = 60) -> Any:
+    headers = {"User-Agent": _UA, "Accept": "application/json"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode("utf-8")
+        headers["Content-Type"] = "application/json"
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            raw = resp.read().decode("utf-8")
+            return json.loads(raw) if raw.strip() else None
+    except urllib.error.HTTPError as exc:
+        raise FoundryError(_http_message(exc)) from exc
+    except urllib.error.URLError as exc:
+        raise FoundryError(f"Cannot reach {url}: {exc.reason}") from exc
+
+
+def _http_message(exc: urllib.error.HTTPError) -> str:
+    """Pull the friendliest message out of a JsonApiResponse error envelope."""
+    body = ""
+    try:
+        body = exc.read().decode("utf-8", errors="replace")
+    except Exception:
+        pass
+    try:
+        env = json.loads(body)
+        errs = env.get("errors") if isinstance(env, dict) else None
+        if errs:
+            first = errs[0]
+            return first.get("message") or first.get("code") or f"HTTP {exc.code}"
+    except Exception:
+        pass
+    return f"HTTP {exc.code}: {body[:300]}" if body else f"HTTP {exc.code}"
+
+
+def auth_post(path: str, body: dict, token: str | None = None) -> Any:
+    """POST to the auth-efga issuer ({AUTH_BASE}/auth/v1{path}); returns unwrapped data."""
+    return _unwrap(_send(f"{AUTH_BASE}/auth/v1{path}", method="POST", token=token, body=body))
+
+
+def api_request(path: str, *, method: str = "GET", token: str | None = None, body: dict | None = None) -> Any:
+    """Call fid ({API_BASE}{path}) with a bearer token; returns unwrapped data."""
+    return _unwrap(_send(f"{API_BASE}{path}", method=method, token=token, body=body))
+
+
+def put_file(url: str, filepath: str, timeout: int = 1800) -> None:
+    """Stream a file to a presigned PUT URL (R2). No auth/envelope; streams from disk."""
+    size = os.path.getsize(filepath)
+    with open(filepath, "rb") as f:
+        req = urllib.request.Request(
+            url,
+            data=f,
+            method="PUT",
+            headers={"User-Agent": _UA, "Content-Length": str(size)},
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                if resp.status not in (200, 201, 204):
+                    raise FoundryError(f"Upload failed: HTTP {resp.status}")
+        except urllib.error.HTTPError as exc:
+            raise FoundryError(f"Upload failed: HTTP {exc.code}") from exc
+        except urllib.error.URLError as exc:
+            raise FoundryError(f"Upload failed: {exc.reason}") from exc
