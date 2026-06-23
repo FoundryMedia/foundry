@@ -1,0 +1,92 @@
+name: CLI (build + release)
+
+# Builds the Foundry CLI (PyInstaller one-dir + an Inno Setup installer) and
+# publishes a GitHub Release that the CLI auto-updater reads (releases/latest).
+#
+# foundry is PUBLIC, so this self-deploys HERE - a public repo cannot call
+# foundry-ops' private reusable workflows (GitHub limitation; the documented
+# public-repo exception in foundry-cicd-models.md). Mirrors wiki.yml's
+# self-contained pattern.
+#   PR (cli/**)               -> build-verify the installer (no release)
+#   push to release (cli/**)  -> build + publish a Release IF the version is new
+#   workflow_dispatch         -> build + publish (skips if the version already shipped)
+#
+# To cut a release: bump cli/pyproject.toml version, merge to release. The run
+# detects the new version and publishes; an unchanged version is a no-op.
+
+on:
+  pull_request:
+    paths: ['cli/**', '.github/workflows/cli-release.yml']
+  push:
+    branches: [release]
+    paths: ['cli/**', '.github/workflows/cli-release.yml']
+  workflow_dispatch:
+
+concurrency:
+  group: foundry-cli-release
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Install CLI + packaging deps
+        shell: bash
+        run: |
+          python -m pip install --upgrade pip
+          pip install ./cli
+          pip install pyinstaller
+
+      - name: Resolve version
+        id: ver
+        shell: bash
+        run: |
+          V=$(python -c "import tomllib,pathlib;print(tomllib.loads(pathlib.Path('cli/pyproject.toml').read_text())['project']['version'])")
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "CLI version: $V"
+
+      - name: Package (PyInstaller + Inno Setup)
+        shell: bash
+        env:
+          ISCC_PATH: 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe'
+        run: python cli/package/package.py
+
+      - name: Does this release already exist?
+        id: exists
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "v${{ steps.ver.outputs.version }}" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Publish Release
+        if: (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && steps.exists.outputs.exists == 'false'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V="${{ steps.ver.outputs.version }}"
+          gh release create "v$V" -R "$GITHUB_REPOSITORY" \
+            --title "Foundry CLI v$V" \
+            --notes "Foundry CLI v$V" \
+            cli/package/target/$V/*
+
+      - name: Already released (no-op)
+        if: steps.exists.outputs.exists == 'true'
+        run: echo "Release v${{ steps.ver.outputs.version }} already exists - bump cli/pyproject.toml to publish a new one."
