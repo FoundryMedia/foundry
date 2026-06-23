@@ -60,3 +60,11 @@ Thumbs.db
 # Editors
 .vscode/
 .idea/
+
+# Exception: cli/package is the CLI PACKAGER SOURCE (package.py + the Inno Setup
+# .iss), not build output — CI needs them to build the release. Build artifacts
+# (cli/package/target/) stay ignored.
+!cli/package/
+!cli/package/package.py
+!cli/package/installer/
+!cli/package/installer/foundry-cli-installer-setup.iss
