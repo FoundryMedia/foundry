@@ -26,6 +26,7 @@ def upload_build(
     version: str | None = None,
     engine: str | None = "unreal",
     entrypoint: str | None = None,
+    image_ref: str | None = None,
     token: str | None = None,
 ) -> dict:
     """Upload a packaged build FILE to FCM (create -> presigned PUT -> complete).
@@ -44,6 +45,9 @@ def upload_build(
         req["engine"] = engine
     if kind.lower() == "server" and entrypoint:
         req["entrypoint"] = entrypoint
+    if kind.lower() == "server" and image_ref:
+        # The container image RepoTag this tar carries; fid stores it so FCG runs this image.
+        req["imageRef"] = image_ref
 
     size_mb = os.path.getsize(file) / 1e6
     click.echo(f"Creating {kind_u.lower()} build for {filename} ({size_mb:.1f} MB)…")
@@ -85,9 +89,16 @@ def build() -> None:
     help="Build engine/toolchain: unreal (default), unity, godot.",
 )
 @click.option("--entrypoint", default=None, help="(server) launch entrypoint, e.g. Server.sh.")
-def push(file, kind, version, engine, entrypoint) -> None:
+@click.option(
+    "--image-tag",
+    "image_ref",
+    default=None,
+    help="(server) the container image RepoTag this build's tar carries (e.g. mygame:1.0.0); "
+    "fid stores it so FCG runs this image.",
+)
+def push(file, kind, version, engine, entrypoint, image_ref) -> None:
     """Upload a packaged build FILE (.zip) to the Foundry Content Mesh."""
-    upload_build(file, kind=kind, version=version, engine=engine, entrypoint=entrypoint)
+    upload_build(file, kind=kind, version=version, engine=engine, entrypoint=entrypoint, image_ref=image_ref)
 
 
 @build.command()
