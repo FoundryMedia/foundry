@@ -21,6 +21,14 @@ if sys.platform == "win32":
         kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
     except Exception:
         pass
+    # Force UTF-8 on stdout/stderr so glyphs like the success checkmark don't crash on a
+    # cp1252 console (a non-UTF-8 Windows console raised UnicodeEncodeError on the ✓ in
+    # `foundry build push` AFTER the upload already succeeded — a scary exit-1 on a clean push).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 from foundry_cli.core.cli import FoundryGroup
 from foundry_cli.core.errors import FoundryError
