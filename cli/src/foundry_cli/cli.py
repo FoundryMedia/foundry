@@ -37,6 +37,7 @@ from foundry_cli.commands.db import db
 from foundry_cli.commands.auth_cmd import login, logout
 from foundry_cli.commands.build_cmd import build
 from foundry_cli.commands.publish import publish
+from foundry_cli.commands.fmms import fmms
 
 def register_commands(root: click.Group) -> None:
     root.add_command(run)
@@ -50,6 +51,7 @@ def register_commands(root: click.Group) -> None:
     root.add_command(logout)
     root.add_command(build)
     root.add_command(publish)
+    root.add_command(fmms)
 
 
 def print_header(local: str) -> None:
