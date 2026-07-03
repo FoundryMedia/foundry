@@ -103,13 +103,7 @@ def _find_staged_dir(archive: Path) -> Path | None:
 
 @click.command()
 @click.option("--version", "version", default=None, help="Release version, e.g. 1.0.0 (recommended).")
-@click.option(
-    "--submit",
-    "do_submit",
-    is_flag=True,
-    default=False,
-    help="After pushing, submit for the $20 CLIENT review (prompts to confirm the fee).",
-)
+@click.option("--submit", "do_submit", is_flag=True, default=False, hidden=True)
 def publish(version, do_submit) -> None:
     """Cook the local game build and push it to the Foundry Content Mesh."""
     root = Path.cwd()
@@ -142,31 +136,18 @@ def publish(version, do_submit) -> None:
     except OSError:
         pass
 
-    if do_submit and build_id:
+    # NOTE: --submit is intentionally inert. Publishing to the Foundry App is a BILLED review and must
+    # go through the web checkout so the dev sees + confirms the charge — the CLI never triggers a fee.
+    if do_submit:
         click.echo()
-        _submit(token, build_id)
+        click.echo(click.style(
+            "Publishing review is done in the web console (it's a billed action needing an explicit "
+            "checkout — the CLI can't charge you). Open your game at "
+            "https://foundryplatform.app/console and use 'Submit for review'.", fg="yellow"))
     elif build_id:
         click.echo()
         click.echo(
-            "Next: submit it for the client review with "
-            + click.style(f"foundry build submit {build_id}", fg="cyan", bold=True)
+            "Pushed. To publish to the Foundry App, open your game in the web console and use "
+            + click.style("'Submit for review'", fg="cyan", bold=True)
+            + " (billed with checkout there)."
         )
-
-
-def _submit(token: str, build_id: str) -> None:
-    fee = fid.api_request("/v1/fcm/review-fee", token=token)
-    amount = (fee or {}).get("amountUsd") if isinstance(fee, dict) else None
-    waived = (fee or {}).get("waived") if isinstance(fee, dict) else None
-    if waived:
-        click.echo("Review fee is waived for your account — no charge.")
-    elif amount:
-        click.echo(click.style(f"Submitting a CLIENT for review charges ${amount} (one-time).", fg="yellow"))
-        if not click.confirm("Charge the card on file and submit?"):
-            click.echo("Pushed but not submitted. Submit later with "
-                       + click.style(f"foundry build submit {build_id}", fg="cyan"))
-            return
-    row = fid.api_request(
-        f"/v1/fcm/builds/{build_id}/submit", method="POST", token=token, body={"acknowledgeFee": True}
-    )
-    state = row.get("state") if isinstance(row, dict) else None
-    click.echo(click.style(f"✓ Submitted {build_id} for review (state: {state}).", fg="green", bold=True))
