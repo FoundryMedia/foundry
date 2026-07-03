@@ -1,13 +1,16 @@
-"""`foundry build` — game build artifacts on the Foundry Content Mesh (FCM).
+"""`foundry fcm` — upload game build artifacts to the Foundry Content Mesh (FCM).
 
-  push    upload an already-packaged build (.zip) to FCM
-  submit  submit an uploaded CLIENT build for the $20 review
+  push    upload an already-packaged build (.zip client / .tar server) to FCM
 
 The bytes go DIRECTLY to Cloudflare R2 via a presigned PUT (never through fid):
   POST /v1/fcm/builds (create + presign) -> PUT file to R2 -> POST /v1/fcm/builds/{id}/complete.
 Requires an active publisher (the server enforces it); run `foundry login` first.
 
-To cook a UE project locally AND push it in one step, use `foundry publish`.
+To PACKAGE a build locally first, use `foundry package --client` / `foundry package --server`.
+Uploading does NOT publish: publishing to the Foundry App is a billed action done in the web
+console (with checkout) — the CLI never charges you.
+
+`foundry build push` is a DEPRECATED alias of `foundry fcm push` (kept so existing scripts work).
 """
 
 from __future__ import annotations
@@ -18,6 +21,9 @@ import click
 
 from foundry_cli.core import auth, fid
 
+# Map a --type to the FCM engine specifier default (server/client are the two build faces).
+_ENGINE_BY_TYPE = {"client": "unreal", "server": "unreal"}
+
 
 def upload_build(
     file: str,
@@ -27,18 +33,22 @@ def upload_build(
     engine: str | None = "unreal",
     entrypoint: str | None = None,
     image_ref: str | None = None,
+    name: str | None = None,
     token: str | None = None,
 ) -> dict:
     """Upload a packaged build FILE to FCM (create -> presigned PUT -> complete).
 
     Returns the completed build row (carries ``id`` + ``status``). Shared by
-    ``foundry build push`` and ``foundry publish``.
+    ``foundry fcm push`` and its deprecated alias ``foundry build push``.
     """
     token = token or auth.access_token()
     filename = os.path.basename(file)
     kind_u = kind.upper()
 
     req: dict = {"kind": kind_u, "filename": filename}
+    if name:
+        # fid's BuildUploadRequest calls the human name field `label` (the console "Name").
+        req["label"] = name
     if version:
         req["version"] = version
     if engine:
@@ -67,20 +77,27 @@ def upload_build(
     return row
 
 
+# ---------------------------------------------------------------------------
+# `foundry fcm push` — the canonical upload command
+# ---------------------------------------------------------------------------
+
 @click.group()
-def build() -> None:
-    """Game build artifacts (FCM)."""
+def fcm() -> None:
+    """Foundry Content Mesh — upload packaged game builds."""
 
 
-@build.command()
-@click.argument("file", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
+@fcm.command(name="push")
+@click.argument("path_to_build", metavar="PATH_TO_BUILD",
+                type=click.Path(exists=True, dir_okay=False, resolve_path=True))
 @click.option(
-    "--kind",
+    "--type",
+    "build_type",
     type=click.Choice(["client", "server"], case_sensitive=False),
     default="client",
     show_default=True,
-    help="Build face: a player client or a dedicated-server build.",
+    help="Build face: a player 'client' (.zip) or a dedicated 'server' (.tar).",
 )
+@click.option("--name", "name", default=None, help="Build label/name for this artifact.")
 @click.option("--version", "version", default=None, help="Build version, e.g. 1.0.0.")
 @click.option(
     "--engine",
@@ -96,12 +113,72 @@ def build() -> None:
     help="(server) the container image RepoTag this build's tar carries (e.g. mygame:1.0.0); "
     "fid stores it so FCG runs this image.",
 )
-def push(file, kind, version, engine, entrypoint, image_ref) -> None:
-    """Upload a packaged build FILE (.zip) to the Foundry Content Mesh."""
-    upload_build(file, kind=kind, version=version, engine=engine, entrypoint=entrypoint, image_ref=image_ref)
+def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image_ref) -> None:
+    """Upload a packaged build to FCM.
+
+    PATH_TO_BUILD is the packaged artifact: a .zip for --type client, a .tar for --type server
+    (produced by `foundry package --client` / `--server`).
+    """
+    upload_build(
+        path_to_build,
+        kind=build_type,
+        version=version,
+        engine=engine,
+        entrypoint=entrypoint,
+        image_ref=image_ref,
+        name=name,
+    )
 
 
-@build.command()
+# ---------------------------------------------------------------------------
+# `foundry build` — DEPRECATED alias group (kept so existing scripts keep working)
+# ---------------------------------------------------------------------------
+
+@click.group(hidden=True)
+def build() -> None:
+    """DEPRECATED — renamed to `foundry fcm`. Use `foundry fcm push`."""
+
+
+@build.command(name="push", hidden=True)
+@click.argument("file", type=click.Path(exists=True, dir_okay=False, resolve_path=True))
+@click.option(
+    "--kind",
+    type=click.Choice(["client", "server"], case_sensitive=False),
+    default="client",
+    show_default=True,
+    help="Build face: a player client or a dedicated-server build.",
+)
+@click.option("--name", "name", default=None, help="Build label/name for this artifact.")
+@click.option("--version", "version", default=None, help="Build version, e.g. 1.0.0.")
+@click.option(
+    "--engine",
+    default="unreal",
+    show_default=True,
+    help="Build engine/toolchain: unreal (default), unity, godot.",
+)
+@click.option("--entrypoint", default=None, help="(server) launch entrypoint, e.g. Server.sh.")
+@click.option(
+    "--image-tag",
+    "image_ref",
+    default=None,
+    help="(server) the container image RepoTag this build's tar carries (e.g. mygame:1.0.0).",
+)
+def build_push(file, kind, name, version, engine, entrypoint, image_ref) -> None:
+    """DEPRECATED alias of `foundry fcm push`. Upload a packaged build FILE to FCM."""
+    click.echo(click.style(
+        "note: `foundry build push` is deprecated — use `foundry fcm push`.", fg="yellow"))
+    upload_build(
+        file,
+        kind=kind,
+        version=version,
+        engine=engine,
+        entrypoint=entrypoint,
+        image_ref=image_ref,
+        name=name,
+    )
+
+
+@build.command(name="submit", hidden=True)
 @click.argument("build_id")
 @click.option("--yes", "ack", is_flag=True, default=False, hidden=True)
 def submit(build_id, ack) -> None:
