@@ -103,36 +103,16 @@ def push(file, kind, version, engine, entrypoint, image_ref) -> None:
 
 @build.command()
 @click.argument("build_id")
-@click.option(
-    "--yes",
-    "ack",
-    is_flag=True,
-    default=False,
-    help="Acknowledge the review fee (skip the prompt).",
-)
+@click.option("--yes", "ack", is_flag=True, default=False, hidden=True)
 def submit(build_id, ack) -> None:
-    """Submit an uploaded CLIENT build for the $20 review (waived for Studio/comp)."""
-    token = auth.access_token()
-    fee = fid.api_request("/v1/fcm/review-fee", token=token)
-    amount = (fee or {}).get("amountUsd") if isinstance(fee, dict) else None
-    waived = (fee or {}).get("waived") if isinstance(fee, dict) else None
+    """Submit a build for publishing review. REMOVED — publishing is a billed action.
 
-    if waived:
-        click.echo("Review fee is waived for your account — no charge.")
-    elif amount:
-        click.echo(
-            click.style(f"Submitting a CLIENT for review charges ${amount}.", fg="yellow")
-            + " This is a one-time quality-review fee."
-        )
-        if not ack and not click.confirm("Charge the card on file and submit?"):
-            click.echo("Aborted — not submitted.")
-            return
-
-    row = fid.api_request(
-        f"/v1/fcm/builds/{build_id}/submit",
-        method="POST",
-        token=token,
-        body={"acknowledgeFee": True},
+    Publishing to the Foundry App is a paid review and MUST go through the web checkout so you
+    see and confirm the charge. The CLI can never trigger a charge. Publish from the dev console:
+    open your game and use "Submit for review".
+    """
+    raise click.ClickException(
+        "Publishing review moved to the web console (it's a billed action that needs an explicit "
+        "checkout). Open your game at https://foundryplatform.app/console and use 'Submit for review'. "
+        "The CLI cannot submit for publishing."
     )
-    state = row.get("state") if isinstance(row, dict) else None
-    click.echo(click.style(f"✓ Submitted {build_id} for review (state: {state}).", fg="green", bold=True))
