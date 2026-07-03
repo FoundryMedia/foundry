@@ -162,9 +162,9 @@ def fcm() -> None:
 @click.option(
     "--game",
     default=None,
-    help="Game slug to LINK this build to after upload (the console 'Assign to game' action). "
-    "Defaults to the project's .foundry/config.yml gameId when run inside a game project; "
-    "pass --game '' to skip linking.",
+    help="Game to LINK this build to after upload (the console 'Assign to game' action): a slug "
+    "or the game FRN (frn:fgs:<orgNumber>:game/<slug>, copyable from the console). Defaults to "
+    "the project's .foundry/config.yml gameId when run inside a game project; pass --game '' to skip.",
 )
 def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image_ref, game) -> None:
     """Upload a packaged build to FCM.
