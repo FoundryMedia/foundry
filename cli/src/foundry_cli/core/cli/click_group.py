@@ -82,7 +82,7 @@ class FoundryGroup(click.Group):
 				print(click.style("Commands:", fg="yellow", bold=True) + click.style("", reset=True))
 				for name in sorted(command_names):
 					subcmd = cmd.get_command(ctx, name)
-					if subcmd is None:
+					if subcmd is None or getattr(subcmd, "hidden", False):
 						continue
 					sub_name = click.style(name, fg="cyan", bold=True)
 					sub_help = (subcmd.get_short_help_str() or "").strip()
