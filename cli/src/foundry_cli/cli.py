@@ -21,6 +21,14 @@ if sys.platform == "win32":
         kernel32.SetConsoleMode(kernel32.GetStdHandle(-11), 7)
     except Exception:
         pass
+    # Force UTF-8 on stdout/stderr so glyphs like the success checkmark don't crash on a
+    # cp1252 console (a non-UTF-8 Windows console raised UnicodeEncodeError on the ✓ in
+    # `foundry build push` AFTER the upload already succeeded — a scary exit-1 on a clean push).
+    for _stream in (sys.stdout, sys.stderr):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except Exception:
+            pass
 
 from foundry_cli.core.cli import FoundryGroup
 from foundry_cli.core.errors import FoundryError
@@ -35,7 +43,8 @@ from foundry_cli.commands.config_cmd import config
 from foundry_cli.commands.sync import sync
 from foundry_cli.commands.db import db
 from foundry_cli.commands.auth_cmd import login, logout
-from foundry_cli.commands.build_cmd import build
+from foundry_cli.commands.build_cmd import build, fcm
+from foundry_cli.commands.package import package
 from foundry_cli.commands.publish import publish
 from foundry_cli.commands.fmms import fmms
 
@@ -49,8 +58,10 @@ def register_commands(root: click.Group) -> None:
     root.add_command(db)
     root.add_command(login)
     root.add_command(logout)
-    root.add_command(build)
-    root.add_command(publish)
+    root.add_command(package)
+    root.add_command(fcm)
+    root.add_command(build)  # DEPRECATED hidden alias of `fcm`
+    root.add_command(publish)  # hidden shim -> package / fcm push
     root.add_command(fmms)
 
 
@@ -98,6 +109,8 @@ def display_help(ctx: click.Context) -> None:
     # Commands
     print(click.style("Commands:", fg="yellow", bold=True))
     for name, command in sorted(ctx.command.commands.items()):
+        if getattr(command, "hidden", False):
+            continue  # skip DEPRECATED/hidden shims (build, publish)
         cmd_name = click.style(name, fg="cyan", bold=True)
         cmd_help = (command.get_short_help_str() or "").strip()
         cmd_help_styled = click.style(cmd_help, fg="white")
