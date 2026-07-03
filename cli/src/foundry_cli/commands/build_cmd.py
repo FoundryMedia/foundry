@@ -16,13 +16,40 @@ console (with checkout) — the CLI never charges you.
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import click
 
 from foundry_cli.core import auth, fid
+from foundry_cli.core.errors import FoundryError
 
 # Map a --type to the FCM engine specifier default (server/client are the two build faces).
 _ENGINE_BY_TYPE = {"client": "unreal", "server": "unreal"}
+
+
+def _project_game_id() -> str | None:
+    """The gameId from .foundry/config.yml, walking up from CWD (game-publisher projects only).
+
+    Lets `foundry fcm push` link the uploaded build to the project's game without an explicit
+    --game — a push from inside a game project is unambiguous. Any read/parse problem just means
+    "no default" (the push must never fail on config sniffing).
+    """
+    cwd = Path.cwd()
+    for root in (cwd, *cwd.parents):
+        for filename in ("config.yml", "config.yaml"):
+            cfg_path = root / ".foundry" / filename
+            if cfg_path.is_file():
+                try:
+                    import yaml
+
+                    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
+                except Exception:
+                    return None
+                if cfg.get("kind") != "game-publisher":
+                    return None
+                game_id = cfg.get("gameId")
+                return str(game_id).strip().lower() if game_id else None
+    return None
 
 
 def upload_build(
@@ -34,9 +61,14 @@ def upload_build(
     entrypoint: str | None = None,
     image_ref: str | None = None,
     name: str | None = None,
+    game: str | None = None,
     token: str | None = None,
 ) -> dict:
     """Upload a packaged build FILE to FCM (create -> presigned PUT -> complete).
+
+    When ``game`` is set, the completed build is LINKED to that game (the console
+    "Assign to game" action) so it never sits in the Unassigned bucket. Link failure
+    never fails the push — the bytes are already up; the console action remains.
 
     Returns the completed build row (carries ``id`` + ``status``). Shared by
     ``foundry fcm push`` and its deprecated alias ``foundry build push``.
@@ -74,6 +106,20 @@ def upload_build(
         click.style(f"✓ Uploaded build {row['id']}", fg="green", bold=True)
         + click.style(f" (status: {row.get('status')}).", fg="green")
     )
+
+    if game:
+        try:
+            fid.api_request(
+                f"/v1/fcm/builds/{row['id']}/game",
+                method="POST",
+                token=token,
+                body={"gameSlug": game},
+            )
+            click.echo(click.style(f"✓ Linked to game '{game}'.", fg="green"))
+        except FoundryError as exc:
+            # Upload succeeded — a link failure (already assigned / not your game) is a warning,
+            # and the console "Assign to game" action remains available.
+            click.echo(click.style(f"note: build uploaded but not linked to '{game}': {exc}", fg="yellow"))
     return row
 
 
@@ -113,12 +159,24 @@ def fcm() -> None:
     help="(server) the container image RepoTag this build's tar carries (e.g. mygame:1.0.0); "
     "fid stores it so FCG runs this image.",
 )
-def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image_ref) -> None:
+@click.option(
+    "--game",
+    default=None,
+    help="Game slug to LINK this build to after upload (the console 'Assign to game' action). "
+    "Defaults to the project's .foundry/config.yml gameId when run inside a game project; "
+    "pass --game '' to skip linking.",
+)
+def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image_ref, game) -> None:
     """Upload a packaged build to FCM.
 
     PATH_TO_BUILD is the packaged artifact: a .zip for --type client, a .tar for --type server
     (produced by `foundry package --client` / `--server`).
     """
+    if game is None:
+        game = _project_game_id()
+        if game:
+            click.echo(f"Linking to game '{game}' (.foundry/config.yml) — pass --game '' to skip.")
+    game = (game or "").strip().lower() or None
     upload_build(
         path_to_build,
         kind=build_type,
@@ -127,6 +185,7 @@ def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image
         entrypoint=entrypoint,
         image_ref=image_ref,
         name=name,
+        game=game,
     )
 
 
