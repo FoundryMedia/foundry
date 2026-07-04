@@ -169,7 +169,8 @@ def _zip_excluded(path: Path) -> bool:
 
 def _zip_staged(staged: Path, zip_base: Path) -> Path:
     """Zip the staged client tree, excluding .pdb + Manifest_* stage files."""
-    zip_path = zip_base.with_suffix(".zip")
+    # NOT with_suffix: it would eat the last version segment ("game-0.2.0" -> "game-0.2.zip").
+    zip_path = zip_base.parent / (zip_base.name + ".zip")
     with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
         for p in sorted(staged.rglob("*")):
             if not p.is_file() or _zip_excluded(p):
