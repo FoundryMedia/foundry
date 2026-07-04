@@ -15,7 +15,9 @@ Then upload the artifact:
 
 Reads `.foundry/config.yml` at the project root (kind: game-publisher):
   publisher, gameId
-  build:  { type: ue5, ueRoot, uprojectPath, executableRelpath }   # --client
+  build:  { type: ue5, ueRoot, uprojectPath, executableRelpath,
+            clientConfig: Shipping|Development (default Shipping),
+            chunking: true|false (default true) }                  # --client
   server: { ueRoot, uprojectPath, serverTarget, dockerfile, imageName }  # --server
 """
 
@@ -25,6 +27,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 from pathlib import Path
 
 import click
@@ -70,6 +73,9 @@ def _run(cmd: list[str], *, what: str) -> None:
 # --client : UE client cook + zip
 # ---------------------------------------------------------------------------
 
+_CLIENT_CONFIGS = ("Shipping", "Development", "Test", "DebugGame")
+
+
 def _cook_ue_client(root: Path, build: dict, version: str) -> Path:
     """Run UE BuildCookRun for the CLIENT locally; return the staged dir (holds the .exe)."""
     ue_root = build.get("ueRoot")
@@ -80,6 +86,12 @@ def _cook_ue_client(root: Path, build: dict, version: str) -> Path:
     if not uproject.is_file():
         raise FoundryError(f"uproject not found: {uproject}")
     target = build.get("target") or uproject.stem  # e.g. Conquest
+
+    client_config = build.get("clientConfig") or "Shipping"
+    if client_config not in _CLIENT_CONFIGS:
+        raise FoundryError(
+            f"build.clientConfig {client_config!r} is not one of {', '.join(_CLIENT_CONFIGS)}."
+        )
 
     is_win = sys.platform == "win32"
     runuat = Path(ue_root) / "Engine" / "Build" / "BatchFiles" / ("RunUAT.bat" if is_win else "RunUAT.sh")
@@ -92,14 +104,16 @@ def _cook_ue_client(root: Path, build: dict, version: str) -> Path:
         f"-project={uproject}",
         "-platform=Win64",
         f"-target={target}",
-        "-clientconfig=Development",
+        f"-clientconfig={client_config}",
         "-build", "-cook", "-stage", "-pak", "-archive",
         f"-archivedirectory={archive}",
         "-nodebuginfo", "-unattended", "-utf8output", "-noP4",
     ]
-    cmd = (["cmd", "/c", str(runuat)] if is_win else [str(runuat)]) + uat_args
+    # Invoke the .bat directly (never `cmd /c <path> <args>` — cmd re-splits an
+    # unquoted spaced path like "F:\Documents\Unreal Projects\..." and dies).
+    cmd = [str(runuat)] + uat_args
 
-    click.echo(click.style(f"Cooking {target} (Win64, Development client) locally…", fg="cyan"))
+    click.echo(click.style(f"Cooking {target} (Win64, {client_config} client) locally…", fg="cyan"))
     click.echo(click.style("  (first cook compiles the client target — this can take a while)", fg="white"))
     _run(cmd, what="BuildCookRun (client)")
 
@@ -107,6 +121,62 @@ def _cook_ue_client(root: Path, build: dict, version: str) -> Path:
     if staged is None:
         raise FoundryError(f"No packaged client (.exe) found under {archive} after cook.")
     return staged
+
+
+# A single monolithic content container bigger than this means chunking isn't
+# working — every content tweak would re-ship the whole thing to players.
+_CHUNK_SIZE_GATE_BYTES = 200 * 1024 * 1024
+
+
+def _validate_chunked_output(staged: Path, chunking: bool) -> None:
+    """Delta-friendliness gate: the launcher's delta-sync is per-file, so content
+    must be split across multiple pak/IoStore containers to patch incrementally.
+    With build.chunking enabled (the default), fail if the cook produced a single
+    monolithic container above the size gate."""
+    containers = sorted(staged.rglob("*.ucas")) or sorted(staged.rglob("*.pak"))
+    if not containers:
+        return  # no pak output at all — nothing to validate
+
+    total = 0
+    click.echo(click.style("Content containers:", fg="cyan"))
+    for c in containers:
+        size = c.stat().st_size
+        total += size
+        click.echo(f"  {c.name}  {size / (1024 * 1024):,.1f} MB")
+
+    if not chunking:
+        return
+    if len(containers) == 1 and containers[0].stat().st_size > _CHUNK_SIZE_GATE_BYTES:
+        raise FoundryError(
+            f"Cook produced a SINGLE {containers[0].stat().st_size / (1024 * 1024):,.0f} MB content "
+            "container — every content change would re-ship all of it to players.\n"
+            "Enable chunk generation in the project so content splits into multiple containers:\n"
+            "  Config/DefaultGame.ini:\n"
+            "    [/Script/UnrealEd.ProjectPackagingSettings]\n"
+            "    bGenerateChunks=True\n"
+            "  then assign chunks via PrimaryAssetLabel assets or\n"
+            "  [/Script/Engine.AssetManagerSettings] rules (e.g. maps -> ChunkId 1+).\n"
+            "If this game is intentionally monolithic, set build.chunking: false in .foundry/config.yml."
+        )
+
+
+# Stage-tree noise that must never ship to players: debug symbols and the UAT
+# stage manifests (Manifest_UFSFiles_Win64.txt etc.).
+def _zip_excluded(path: Path) -> bool:
+    name = path.name
+    return name.lower().endswith(".pdb") or (name.startswith("Manifest_") and name.endswith(".txt"))
+
+
+def _zip_staged(staged: Path, zip_base: Path) -> Path:
+    """Zip the staged client tree, excluding .pdb + Manifest_* stage files."""
+    # NOT with_suffix: it would eat the last version segment ("game-0.2.0" -> "game-0.2.zip").
+    zip_path = zip_base.parent / (zip_base.name + ".zip")
+    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=6) as zf:
+        for p in sorted(staged.rglob("*")):
+            if not p.is_file() or _zip_excluded(p):
+                continue
+            zf.write(p, p.relative_to(staged).as_posix())
+    return zip_path
 
 
 def _find_staged_dir(archive: Path) -> Path | None:
@@ -129,12 +199,13 @@ def _package_client(root: Path, cfg: dict, version: str | None, out_dir: Path | 
         raise FoundryError(f"build.type {btype!r} not supported by `package --client` yet (Unreal only).")
 
     staged = _cook_ue_client(root, build, version or "dev")
+    _validate_chunked_output(staged, chunking=bool(build.get("chunking", True)))
 
     click.echo("Packaging the cooked client into a .zip…")
     base_name = f"{cfg.get('gameId', 'game')}-{version or 'dev'}"
     dest_dir = out_dir or Path(tempfile.mkdtemp(prefix="fcm-zip-"))
     dest_dir.mkdir(parents=True, exist_ok=True)
-    zip_path = Path(shutil.make_archive(str(dest_dir / base_name), "zip", root_dir=str(staged)))
+    zip_path = _zip_staged(staged, dest_dir / base_name)
     return zip_path
 
 
@@ -182,7 +253,8 @@ def _cook_ue_server(root: Path, server: dict, version: str) -> Path:
         # NOTE: deliberately NO -archive (see docstring) and NO -nullrhi.
         "-unattended", "-utf8output",
     ]
-    cmd = (["cmd", "/c", str(runuat)] if is_win else [str(runuat)]) + uat_args
+    # Invoke the .bat directly (never `cmd /c <path> <args>` — see the client cook note).
+    cmd = [str(runuat)] + uat_args
 
     click.echo(click.style(f"Cooking {server_target} (Linux, Development dedicated server) locally…", fg="cyan"))
     click.echo(click.style(
