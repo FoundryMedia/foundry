@@ -190,6 +190,120 @@ def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image
 
 
 # ---------------------------------------------------------------------------
+# `foundry fcm publish` — BYO: assemble + SIGN the manifest locally, then upload
+# ---------------------------------------------------------------------------
+
+def _load_publisher_config() -> dict:
+    """Read the game-publisher .foundry/config.yml (publisher, gameId, build.*). Raises if absent."""
+    import yaml  # lazy: only the publish path needs it
+    from pathlib import Path
+
+    d = Path.cwd()
+    for base in [d, *d.parents]:
+        for name in ("config.yml", "config.yaml"):
+            p = base / ".foundry" / name
+            if p.exists():
+                cfg = yaml.safe_load(p.read_text("utf-8")) or {}
+                if cfg.get("kind") == "game-publisher":
+                    return cfg
+    raise click.ClickException(
+        "No .foundry/config.yml (kind: game-publisher) found. Run this inside a game project.")
+
+
+@fcm.command(name="publish")
+@click.argument("staged_dir", metavar="STAGED_DIR",
+                type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.option("--version", required=True, help="Release version, e.g. 1.0.0.")
+@click.option("--prerelease", is_flag=True,
+              help="Add the release but leave the channel pointer untouched (staged rollout).")
+@click.option("--channel", default="stable", show_default=True,
+              help="Channel this release activates (ignored with --prerelease).")
+@click.option("--min-launcher", "min_launcher", default="0.9.0", show_default=True,
+              help="Minimum launcher version required to install this release.")
+def fcm_publish(staged_dir, version, prerelease, channel, min_launcher) -> None:
+    """Publish a client release, signing the manifest on THIS machine (BYO).
+
+    STAGED_DIR is the cooked client tree (e.g. Saved/StagedBuilds/Windows from
+    `foundry package --client`). The build files upload straight to storage; the
+    signed manifest is produced here — Foundry never holds your signing key.
+    """
+    from pathlib import Path
+
+    from foundry_cli.core import minisign, fcm_manifest as fm
+
+    key = minisign.load()
+    if not key:
+        raise click.ClickException("No local signing key. Run `foundry keys generate` first.")
+
+    cfg = _load_publisher_config()
+    slug = (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+    title = cfg.get("title") or slug
+    exe = (cfg.get("build") or {}).get("executableRelpath")
+    if not slug or not publisher:
+        raise click.ClickException(".foundry/config.yml needs both `publisher` and `gameId`.")
+
+    token = auth.access_token()
+
+    # 1. content-address the staged build + assemble the immutable release doc
+    click.echo(f"Hashing {Path(staged_dir).name}…")
+    files, total = fm.content_address(Path(staged_dir), exe)
+    doc = fm.release_doc(slug, version, files, total)
+    doc_bytes = fm.serialize(doc)
+    doc_sha = fm.sha256_bytes(doc_bytes)
+    click.echo(f"  {len(files)} files, {total / 1e6:.1f} MB")
+
+    # 2. accumulate into the current signed root, then SIGN it locally
+    existing = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    root = fm.merge_release(
+        existing, game_id=slug, publisher=publisher, title=title, version=version,
+        doc_sha256=doc_sha, total_size=total, min_launcher_version=min_launcher,
+        mandatory=False, channel=(None if prerelease else channel),
+    )
+    root_bytes = fm.serialize(root)
+    sig_text = minisign.sign_bytes(
+        root_bytes, key, f"signature for {publisher}/{slug} index",
+        f"{publisher}/{slug}@{version}")
+    click.echo(click.style(f"✓ Signed index.json locally with key {key['keyId']}", fg="green"))
+
+    # 3. ask fid which content-addressed files are new (dedup) + get presigned PUT URLs
+    prep = fid.api_request(
+        f"/v1/fcm/games/{slug}/publish/prepare", method="POST", token=token,
+        body={"version": version, "prerelease": prerelease,
+              "files": [{"sha256": f["sha256"], "size": f["size"]} for f in files]})
+    uploads = (prep or {}).get("uploads") or {}
+
+    # 4. upload straight to storage (direct presigned PUTs — bytes never touch fid)
+    by_sha = {f["sha256"]: f for f in files}
+    new_files = [s for s in by_sha if s in uploads]
+    click.echo(f"Uploading {len(new_files)} new files ({len(files) - len(new_files)} reused)…")
+    for sha in new_files:
+        fid.put_file(uploads[sha], str(Path(staged_dir) / by_sha[sha]["path"].replace("/", os.sep)))
+    _put_bytes(uploads["releaseDoc"], doc_bytes)
+    _put_bytes(uploads["index"], root_bytes)
+    _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"))
+
+    # 5. finalize (fid verifies the objects landed + records the release)
+    fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
+                    body={"version": version, "prerelease": prerelease, "channel": channel})
+    where = "added (prerelease)" if prerelease else f"live on {channel}"
+    click.echo(click.style(f"✓ Published {slug} {version} — {where}.", fg="green", bold=True))
+
+
+def _put_bytes(url: str, data: bytes) -> None:
+    """PUT raw bytes to a presigned URL (small manifest objects)."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(delete=False) as tf:
+        tf.write(data)
+        tmp = tf.name
+    try:
+        fid.put_file(url, tmp)
+    finally:
+        os.unlink(tmp)
+
+
+# ---------------------------------------------------------------------------
 # `foundry build` — DEPRECATED alias group (kept so existing scripts keep working)
 # ---------------------------------------------------------------------------
 
