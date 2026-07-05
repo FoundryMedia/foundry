@@ -11,6 +11,7 @@ requires-python = ">=3.9"
 dependencies = [
   "click",
   "colorama",
+  "cryptography",
   "jsonschema",
   "pyyaml",
   "textual==0.56.4",
