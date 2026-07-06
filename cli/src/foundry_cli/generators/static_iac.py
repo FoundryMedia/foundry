@@ -15,6 +15,10 @@ that shape. Variation is data, not code:
     false -> NO custom error responses (raw origin errors — a dedicated
     errorPage mode for doc sites with on-disk 404 pages is future work, see
     the wiki gap analysis in .claude/plans/).
+  * ``csp_report_only``   -> a Content-Security-Policy (Report-Only) custom
+    header on the response-headers policy; empty -> enforced safe headers only
+    (HSTS / X-Content-Type-Options / X-Frame-Options / Referrer-Policy always
+    ship). The policy is attached to the distribution in cloudfront.tf.
 
 All variability lives in ``variables.tf`` defaults (manifest-derived) and
 plan-time-known HCL conditionals — resource files are CONSTANT text, so every
@@ -58,6 +62,7 @@ class StaticSiteSpec:
     stack_path: str
     deploy_branch: str              # branch whose OIDC ref the runner role trusts
     oidc_subjects: tuple[str, ...]  # GitHub OIDC sub claims trusted by the role
+    csp_report_only: str            # optional Content-Security-Policy (Report-Only); "" = safe headers only
 
 
 def resolve_spec(
@@ -139,6 +144,9 @@ def resolve_spec(
         stack_path=stack_path,
         deploy_branch=branch,
         oidc_subjects=subjects,
+        # Report-Only CSP, per-site (the connect/script/style sources differ per app).
+        # Empty -> the response-headers policy still ships the enforced safe headers.
+        csp_report_only=iac.get("cspReportOnly") or "",
     )
 
 
@@ -429,6 +437,10 @@ resource "aws_cloudfront_distribution" "site" {
     # CI invalidates /* after each publish so index.html updates immediately.
     cache_policy_id = "658327ea-f89d-4fab-a63d-7e88639e58f6"
 
+    # Enforced security headers (+ optional report-only CSP). See response-headers.tf.
+    # Applies on cache HIT and MISS, so no invalidation is needed.
+    response_headers_policy_id = aws_cloudfront_response_headers_policy.security.id
+
     dynamic "function_association" {
       for_each = var.www_domain != "" ? [1] : []
       content {
@@ -469,6 +481,68 @@ resource "aws_cloudfront_distribution" "site" {
     Name = "${var.bucket_name}-cdn"
   }
 }
+"""
+
+
+def render_response_headers(spec: StaticSiteSpec) -> str:
+    """CloudFront response-headers policy: enforced safe headers + optional CSP.
+
+    HSTS / X-Content-Type-Options / X-Frame-Options / Referrer-Policy are ENFORCED
+    on every response (constant, secure-by-default for any static site). A
+    Content-Security-Policy is emitted in REPORT-ONLY mode ONLY when the manifest
+    sets ``deploy.iac.cspReportOnly`` — report-only first so a bad policy can't
+    break the SPA; flip the header name to enforce after reviewing violations.
+    Attached to the distribution in cloudfront.tf (applies on cache hit + miss).
+    """
+    if spec.csp_report_only:
+        # The CSP uses only single-quoted source keywords ('self' etc.), so it is
+        # safe inside an HCL double-quoted string.
+        csp_block = f'''
+
+  custom_headers_config {{
+    items {{
+      header   = "Content-Security-Policy-Report-Only"
+      value    = "{spec.csp_report_only}"
+      override = true
+    }}
+  }}'''
+        comment_csp = " + report-only CSP"
+    else:
+        csp_block = ""
+        comment_csp = ""
+
+    return _header(spec) + f"""# ── Security response-headers policy ──────────────────────────
+# Enforced HSTS / X-Content-Type-Options / X-Frame-Options / Referrer-Policy on
+# every response; optional report-only CSP when deploy.iac.cspReportOnly is set.
+# A response-headers policy applies on cache HIT and MISS -> no invalidation.
+
+resource "aws_cloudfront_response_headers_policy" "security" {{
+  name    = "${{var.bucket_name}}-security-headers"
+  comment = "Enforced HSTS/XFO/XCTO/Referrer{comment_csp} for ${{var.domain}}"
+
+  security_headers_config {{
+    strict_transport_security {{
+      access_control_max_age_sec = 63072000 # 2 years
+      include_subdomains         = true
+      preload                    = true
+      override                   = true
+    }}
+
+    content_type_options {{
+      override = true
+    }}
+
+    frame_options {{
+      frame_option = "DENY"
+      override     = true
+    }}
+
+    referrer_policy {{
+      referrer_policy = "strict-origin-when-cross-origin"
+      override        = true
+    }}
+  }}{csp_block}
+}}
 """
 
 
@@ -631,6 +705,7 @@ def generate_static_iac(
         "bucket.tf": render_bucket(spec),
         "certificate.tf": render_certificate(spec),
         "cloudfront.tf": render_cloudfront(spec),
+        "response-headers.tf": render_response_headers(spec),
         "dns.tf": render_dns(spec),
         "iam.tf": render_iam(spec),
         "outputs.tf": render_outputs(spec),
