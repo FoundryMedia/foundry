@@ -19,6 +19,10 @@ that shape. Variation is data, not code:
     header on the response-headers policy; empty -> enforced safe headers only
     (HSTS / X-Content-Type-Options / X-Frame-Options / Referrer-Policy always
     ship). The policy is attached to the distribution in cloudfront.tf.
+  * ``extra_providers``   -> extra Terraform providers added to backend.tf's
+    required_providers (e.g. ``archive`` for a stack whose hand-added file uses
+    ``data.archive_file``). Lets such a stack stay cleanly regenerable instead
+    of hand-editing the generated backend.tf.
 
 All variability lives in ``variables.tf`` defaults (manifest-derived) and
 plan-time-known HCL conditionals — resource files are CONSTANT text, so every
@@ -63,6 +67,7 @@ class StaticSiteSpec:
     deploy_branch: str              # branch whose OIDC ref the runner role trusts
     oidc_subjects: tuple[str, ...]  # GitHub OIDC sub claims trusted by the role
     csp_report_only: str            # optional Content-Security-Policy (Report-Only); "" = safe headers only
+    extra_providers: tuple[tuple[str, str, str], ...]  # (name, source, version) added to required_providers
 
 
 def resolve_spec(
@@ -147,6 +152,14 @@ def resolve_spec(
         # Report-Only CSP, per-site (the connect/script/style sources differ per app).
         # Empty -> the response-headers policy still ships the enforced safe headers.
         csp_report_only=iac.get("cspReportOnly") or "",
+        # Extra Terraform providers a stack needs beyond aws (e.g. archive for a
+        # producer Lambda's data.archive_file). required_providers can't be split
+        # across files, so hand-added files can't declare their own — declare them
+        # here (deploy.iac.extraProviders: [{name, source, version}]).
+        extra_providers=tuple(
+            (p["name"], p["source"], p.get("version", ""))
+            for p in (iac.get("extraProviders") or [])
+        ),
     )
 
 
@@ -174,6 +187,16 @@ def _header(spec: StaticSiteSpec) -> str:
 
 
 def render_backend(spec: StaticSiteSpec) -> str:
+    # Extra providers (beyond aws) declared in the manifest. required_providers
+    # must live in ONE terraform block, so hand-added stack files can't add their
+    # own — they come through here.
+    extra = ""
+    for name, source, version in spec.extra_providers:
+        ver = f'\n      version = "{version}"' if version else ""
+        extra += f"""
+    {name} = {{
+      source  = "{source}"{ver}
+    }}"""
     return _header(spec) + f"""terraform {{
   required_version = ">= 1.10"
 
@@ -181,7 +204,7 @@ def render_backend(spec: StaticSiteSpec) -> str:
     aws = {{
       source  = "hashicorp/aws"
       version = "~> 5.0"
-    }}
+    }}{extra}
   }}
 
   backend "s3" {{
