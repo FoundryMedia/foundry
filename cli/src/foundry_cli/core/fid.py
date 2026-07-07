@@ -79,21 +79,45 @@ def api_request(path: str, *, method: str = "GET", token: str | None = None, bod
     return _unwrap(_send(f"{API_BASE}{path}", method=method, token=token, body=body))
 
 
-def put_file(url: str, filepath: str, timeout: int = 1800) -> None:
-    """Stream a file to a presigned PUT URL (R2). No auth/envelope; streams from disk."""
+def put_file(url: str, filepath: str, timeout: int = 1800, attempts: int = 5,
+             content_type: str | None = None) -> None:
+    """Stream a file to a presigned PUT URL (R2). No auth/envelope; streams from disk.
+
+    `content_type` MUST match what the presigner signed when the URL was minted with
+    one (fid's publish presigns bake it into the SigV4 signature — a missing/different
+    Content-Type is a 403; urllib would otherwise default to x-www-form-urlencoded).
+
+    Retries transient network failures (connection aborts/resets — AV scanners and
+    flaky uplinks kill long PUTs; a presigned S3 PUT is all-or-nothing, so the only
+    recovery is a fresh attempt). HTTP 4xx never retries (expired/invalid presign).
+    """
+    import time
+
     size = os.path.getsize(filepath)
-    with open(filepath, "rb") as f:
-        req = urllib.request.Request(
-            url,
-            data=f,
-            method="PUT",
-            headers={"User-Agent": _UA, "Content-Length": str(size)},
-        )
-        try:
-            with urllib.request.urlopen(req, timeout=timeout) as resp:
-                if resp.status not in (200, 201, 204):
-                    raise FoundryError(f"Upload failed: HTTP {resp.status}")
-        except urllib.error.HTTPError as exc:
-            raise FoundryError(f"Upload failed: HTTP {exc.code}") from exc
-        except urllib.error.URLError as exc:
-            raise FoundryError(f"Upload failed: {exc.reason}") from exc
+    last: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        with open(filepath, "rb") as f:
+            headers = {"User-Agent": _UA, "Content-Length": str(size)}
+            if content_type:
+                headers["Content-Type"] = content_type
+            req = urllib.request.Request(
+                url,
+                data=f,
+                method="PUT",
+                headers=headers,
+            )
+            try:
+                with urllib.request.urlopen(req, timeout=timeout) as resp:
+                    if resp.status not in (200, 201, 204):
+                        raise FoundryError(f"Upload failed: HTTP {resp.status}")
+                    return
+            except urllib.error.HTTPError as exc:
+                if 400 <= exc.code < 500:
+                    raise FoundryError(f"Upload failed: HTTP {exc.code}") from exc
+                last = exc
+            except (urllib.error.URLError, ConnectionError, TimeoutError, OSError) as exc:
+                last = exc
+        if attempt < attempts:
+            time.sleep(min(2 ** attempt, 20))
+    reason = getattr(last, "reason", None) or last
+    raise FoundryError(f"Upload failed after {attempts} attempts: {reason}") from last

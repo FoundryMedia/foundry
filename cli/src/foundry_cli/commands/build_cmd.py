@@ -273,15 +273,17 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher) -> None:
               "files": [{"sha256": f["sha256"], "size": f["size"]} for f in files]})
     uploads = (prep or {}).get("uploads") or {}
 
-    # 4. upload straight to storage (direct presigned PUTs — bytes never touch fid)
+    # 4. upload straight to storage (direct presigned PUTs — bytes never touch fid).
+    #    Content types MUST mirror fid's PublishService presigns (signed into the URLs).
     by_sha = {f["sha256"]: f for f in files}
     new_files = [s for s in by_sha if s in uploads]
     click.echo(f"Uploading {len(new_files)} new files ({len(files) - len(new_files)} reused)…")
     for sha in new_files:
-        fid.put_file(uploads[sha], str(Path(staged_dir) / by_sha[sha]["path"].replace("/", os.sep)))
-    _put_bytes(uploads["releaseDoc"], doc_bytes)
-    _put_bytes(uploads["index"], root_bytes)
-    _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"))
+        fid.put_file(uploads[sha], str(Path(staged_dir) / by_sha[sha]["path"].replace("/", os.sep)),
+                     content_type="application/octet-stream")
+    _put_bytes(uploads["releaseDoc"], doc_bytes, "application/json")
+    _put_bytes(uploads["index"], root_bytes, "application/json")
+    _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
 
     # 5. finalize (fid verifies the objects landed + records the release)
     fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
@@ -290,7 +292,7 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher) -> None:
     click.echo(click.style(f"✓ Published {slug} {version} — {where}.", fg="green", bold=True))
 
 
-def _put_bytes(url: str, data: bytes) -> None:
+def _put_bytes(url: str, data: bytes, content_type: str) -> None:
     """PUT raw bytes to a presigned URL (small manifest objects)."""
     import tempfile
 
@@ -298,7 +300,7 @@ def _put_bytes(url: str, data: bytes) -> None:
         tf.write(data)
         tmp = tf.name
     try:
-        fid.put_file(url, tmp)
+        fid.put_file(url, tmp, content_type=content_type)
     finally:
         os.unlink(tmp)
 
