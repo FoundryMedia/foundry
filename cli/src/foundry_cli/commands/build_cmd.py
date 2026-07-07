@@ -220,20 +220,22 @@ def _load_publisher_config() -> dict:
               help="Channel this release activates (ignored with --prerelease).")
 @click.option("--min-launcher", "min_launcher", default="0.9.0", show_default=True,
               help="Minimum launcher version required to install this release.")
-def fcm_publish(staged_dir, version, prerelease, channel, min_launcher) -> None:
-    """Publish a client release, signing the manifest on THIS machine (BYO).
+@click.option("--managed", is_flag=True,
+              help="Managed signing: fid signs the manifest via your KMS key (no local key needed). "
+                   "Default is BYO (sign locally).")
+def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed) -> None:
+    """Publish a client release.
 
     STAGED_DIR is the cooked client tree (e.g. Saved/StagedBuilds/Windows from
-    `foundry package --client`). The build files upload straight to storage; the
-    signed manifest is produced here — Foundry never holds your signing key.
+    `foundry package --client`). The build files upload straight to storage. BYO
+    (default): the signed manifest is produced HERE — Foundry never holds your key.
+    --managed: fid signs the index via your per-publisher KMS key (the private key
+    stays in the HSM). Stage with --prerelease, then flip the channel in the console
+    or with `foundry fcm channel set`.
     """
     from pathlib import Path
 
     from foundry_cli.core import minisign, fcm_manifest as fm
-
-    key = minisign.load()
-    if not key:
-        raise click.ClickException("No local signing key. Run `foundry keys generate` first.")
 
     cfg = _load_publisher_config()
     slug = (cfg.get("gameId") or "").strip().lower()
@@ -242,6 +244,13 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher) -> None:
     exe = (cfg.get("build") or {}).get("executableRelpath")
     if not slug or not publisher:
         raise click.ClickException(".foundry/config.yml needs both `publisher` and `gameId`.")
+
+    key = None
+    if not managed:
+        key = minisign.load()
+        if not key:
+            raise click.ClickException(
+                "No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
 
     token = auth.access_token()
 
@@ -253,18 +262,21 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher) -> None:
     doc_sha = fm.sha256_bytes(doc_bytes)
     click.echo(f"  {len(files)} files, {total / 1e6:.1f} MB")
 
-    # 2. accumulate into the current signed root, then SIGN it locally
-    existing = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
-    root = fm.merge_release(
-        existing, game_id=slug, publisher=publisher, title=title, version=version,
-        doc_sha256=doc_sha, total_size=total, min_launcher_version=min_launcher,
-        mandatory=False, channel=(None if prerelease else channel),
-    )
-    root_bytes = fm.serialize(root)
-    sig_text = minisign.sign_bytes(
-        root_bytes, key, f"signature for {publisher}/{slug} index",
-        f"{publisher}/{slug}@{version}")
-    click.echo(click.style(f"✓ Signed index.json locally with key {key['keyId']}", fg="green"))
+    # 2. BYO only: accumulate into the current signed root + SIGN it locally. (Managed: fid
+    #    assembles + signs the index server-side from the uploaded release doc.)
+    root_bytes = sig_text = None
+    if not managed:
+        existing = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+        root = fm.merge_release(
+            existing, game_id=slug, publisher=publisher, title=title, version=version,
+            doc_sha256=doc_sha, total_size=total, min_launcher_version=min_launcher,
+            mandatory=False, channel=(None if prerelease else channel),
+        )
+        root_bytes = fm.serialize(root)
+        sig_text = minisign.sign_bytes(
+            root_bytes, key, f"signature for {publisher}/{slug} index",
+            f"{publisher}/{slug}@{version}")
+        click.echo(click.style(f"✓ Signed index.json locally with key {key['keyId']}", fg="green"))
 
     # 3. ask fid which content-addressed files are new (dedup) + get presigned PUT URLs
     prep = fid.api_request(
@@ -282,14 +294,110 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher) -> None:
         fid.put_file(uploads[sha], str(Path(staged_dir) / by_sha[sha]["path"].replace("/", os.sep)),
                      content_type="application/octet-stream")
     _put_bytes(uploads["releaseDoc"], doc_bytes, "application/json")
+    if not managed:
+        # Managed: fid writes index.json + .minisig (KMS-signed) at complete; don't upload ours.
+        _put_bytes(uploads["index"], root_bytes, "application/json")
+        _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
+
+    # 5. finalize — BYO: fid verifies the CLI-signed objects. Managed: fid assembles + KMS-signs.
+    fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
+                    body={"version": version, "prerelease": prerelease, "channel": channel,
+                          "minLauncher": min_launcher})
+    signed = "fid (managed KMS)" if managed else f"key {key['keyId']} (BYO)"
+    where = "added (prerelease)" if prerelease else f"live on {channel}"
+    click.echo(click.style(f"✓ Published {slug} {version} — {where}. Signed by {signed}.",
+                           fg="green", bold=True))
+
+
+@fcm.command(name="releases")
+def fcm_releases() -> None:
+    """List published releases + channel pointers (read from the signed index)."""
+    from foundry_cli.core import fcm_manifest as fm
+
+    cfg = _load_publisher_config()
+    slug = (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not index:
+        raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    channels = index.get("channels") or {}
+    releases = index.get("releases") or {}
+    by_version = sorted(releases.items(), key=lambda e: e[1].get("publishedAt") or "", reverse=True)
+    for version, meta in by_version:
+        pointing = sorted(ch for ch, v in channels.items() if v == version)
+        badge = f"  [{', '.join(pointing)}]" if pointing else ""
+        size = meta.get("totalSize")
+        size_s = f"{size / 1e6:,.1f} MB" if isinstance(size, (int, float)) else "?"
+        click.echo(f"{version:<14} {meta.get('publishedAt', '?'):<28} {size_s:>12}{badge}")
+
+
+@fcm.group()
+def channel() -> None:
+    """Distribution channel pointers (the signed index's channels map)."""
+
+
+@channel.command(name="set")
+@click.argument("channel_name", metavar="CHANNEL")
+@click.argument("version")
+@click.option("--managed", is_flag=True,
+              help="Managed: fid re-signs the index via your KMS key. Default is BYO (re-sign locally).")
+def channel_set(channel_name, version, managed) -> None:
+    """Point CHANNEL (e.g. stable) at an already-published VERSION.
+
+    The pointer lives INSIDE the signed index.json. BYO (default): re-sign the index
+    on THIS machine + upload it. --managed: fid re-signs via your KMS key (the console
+    "Change" button does the same). Rollback = point back at an older version.
+    """
+    from foundry_cli.core import minisign, fcm_manifest as fm
+
+    cfg = _load_publisher_config()
+    slug = (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+    ch = channel_name.strip().lower()
+    token = auth.access_token()
+
+    if managed:
+        # fid validates the version is published, re-assembles + KMS-signs the index.
+        fid.api_request(f"/v1/fcm/games/{slug}/publish/channel", method="POST", token=token,
+                        body={"channel": ch, "version": version})
+        click.echo(click.style(
+            f"✓ {slug} {ch} -> {version} (managed, fid-signed) — live for launchers now.",
+            fg="green", bold=True))
+        return
+
+    key = minisign.load()
+    if not key:
+        raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+
+    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not index:
+        raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    releases = index.get("releases") or {}
+    if version not in releases:
+        raise click.ClickException(
+            f"{version} is not a published release. Published: {', '.join(sorted(releases)) or '(none)'}")
+    prev = (index.get("channels") or {}).get(ch)
+    index.setdefault("channels", {})[ch] = version
+
+    root_bytes = fm.serialize(index)
+    sig_text = minisign.sign_bytes(
+        root_bytes, key, f"signature for {publisher}/{slug} index",
+        f"{publisher}/{slug}@{version}")
+    click.echo(click.style(f"✓ Re-signed index.json locally with key {key['keyId']}", fg="green"))
+
+    # prepare/complete with files=[] — only the re-signed manifest objects move. complete()
+    # also stamps the game's currentVersion; for a stable flip that is exactly right.
+    prep = fid.api_request(
+        f"/v1/fcm/games/{slug}/publish/prepare", method="POST", token=token,
+        body={"version": version, "prerelease": False, "files": []})
+    uploads = (prep or {}).get("uploads") or {}
     _put_bytes(uploads["index"], root_bytes, "application/json")
     _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
-
-    # 5. finalize (fid verifies the objects landed + records the release)
     fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
-                    body={"version": version, "prerelease": prerelease, "channel": channel})
-    where = "added (prerelease)" if prerelease else f"live on {channel}"
-    click.echo(click.style(f"✓ Published {slug} {version} — {where}.", fg="green", bold=True))
+                    body={"version": version, "prerelease": False, "channel": ch})
+    click.echo(click.style(
+        f"✓ {slug} {ch}: {prev or '(unset)'} -> {version} — live for launchers now.",
+        fg="green", bold=True))
 
 
 def _put_bytes(url: str, data: bytes, content_type: str) -> None:
