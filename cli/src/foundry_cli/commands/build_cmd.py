@@ -22,34 +22,19 @@ import click
 
 from foundry_cli.core import auth, fid
 from foundry_cli.core.errors import FoundryError
+from foundry_cli.core.project import project_game_id
 
 # Map a --type to the FCM engine specifier default (server/client are the two build faces).
 _ENGINE_BY_TYPE = {"client": "unreal", "server": "unreal"}
 
 
 def _project_game_id() -> str | None:
-    """The gameId from .foundry/config.yml, walking up from CWD (game-publisher projects only).
+    """The gameId from .foundry/config.yml (game-publisher projects). See core.project.project_game_id.
 
     Lets `foundry fcm push` link the uploaded build to the project's game without an explicit
-    --game — a push from inside a game project is unambiguous. Any read/parse problem just means
-    "no default" (the push must never fail on config sniffing).
+    --game — a push from inside a game project is unambiguous. Shared with `foundry fmms queue`.
     """
-    cwd = Path.cwd()
-    for root in (cwd, *cwd.parents):
-        for filename in ("config.yml", "config.yaml"):
-            cfg_path = root / ".foundry" / filename
-            if cfg_path.is_file():
-                try:
-                    import yaml
-
-                    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    return None
-                if cfg.get("kind") != "game-publisher":
-                    return None
-                game_id = cfg.get("gameId")
-                return str(game_id).strip().lower() if game_id else None
-    return None
+    return project_game_id()
 
 
 def upload_build(
