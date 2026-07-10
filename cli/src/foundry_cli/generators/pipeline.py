@@ -249,6 +249,10 @@ def _append_service_job(
     # Docker setup for ECS services
     if profile.needs_docker:
         lines.append("      - uses: docker/setup-buildx-action@v4")
+        # Export ACTIONS_RUNTIME_TOKEN/ACTIONS_CACHE_URL so the deploy script's
+        # raw `docker buildx build --cache-to type=gha` works (only
+        # docker/build-push-action exports these implicitly).
+        lines.append("      - uses: crazy-max/ghaction-github-runtime@v3")
 
     # Node.js setup for static sites (pnpm must be installed BEFORE setup-node
     # because setup-node auto-detects packageManager from package.json)
