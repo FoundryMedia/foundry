@@ -854,14 +854,24 @@ class EcsEngine:
             "-f", str(self.profile.dockerfile),
             "-t", image_uri,
             "--push",
-            # GHA cache for BuildKit cache mounts (Maven .m2, npm, etc.)
-            # Scope per service to prevent cross-service eviction
-            "--cache-from", f"type=gha,scope={{self.profile.name}}",
-            "--cache-to", f"type=gha,scope={{self.profile.name}},mode=max",
-            # Registry cache for Docker layers (fallback if GHA cache misses)
-            "--cache-from", f"type=registry,ref={{repo_uri}}:buildcache",
-            "--cache-to", f"type=registry,ref={{repo_uri}}:buildcache,mode=max",
         ]
+        # GHA cache for BuildKit layers (Maven .m2, npm, etc.) — scoped per
+        # service to prevent cross-service eviction. Requires the Actions
+        # runtime env (exported by crazy-max/ghaction-github-runtime in the
+        # generated pipeline); skipped on local runs where it would error.
+        if os.environ.get("ACTIONS_RUNTIME_TOKEN"):
+            build_args.extend([
+                "--cache-from", f"type=gha,scope={{self.profile.name}}",
+                "--cache-to", f"type=gha,scope={{self.profile.name}},mode=max",
+            ])
+        # Registry cache for Docker layers (fallback if GHA cache misses).
+        # image-manifest/oci flags are required for ECR to accept a cache
+        # manifest (plain buildkit cacheconfig media types are rejected).
+        build_args.extend([
+            "--cache-from", f"type=registry,ref={{repo_uri}}:buildcache",
+            "--cache-to", (f"type=registry,ref={{repo_uri}}:buildcache,"
+                           "mode=max,image-manifest=true,oci-mediatypes=true"),
+        ])
 
         # Pass GITHUB_TOKEN as Docker secret for GitHub Packages auth
         if os.environ.get("GITHUB_TOKEN"):
