@@ -287,6 +287,14 @@ def _apply_flags(model: dict, **flags) -> dict:
         latency["maxMs"] = flags["latency_max"]
     if latency:
         m["latency"] = latency
+    fill = dict(m.get("fill") or {})
+    if flags.get("min_players") is not None:
+        # 0 = clear (back to exact-fill); anything else is the minimum to start a new match.
+        fill["minPlayers"] = flags["min_players"] or None
+    if flags.get("backfill") is not None:
+        fill["backfill"] = flags["backfill"]
+    if fill:
+        m["fill"] = fill
     return m
 
 
@@ -297,6 +305,7 @@ def _model_to_request(model: dict, game_slug: str) -> dict:
         "latency": model.get("latency") or {"attribute": "latencyMs"},
         "expansions": model.get("expansions") or [],
         "regions": model.get("regions") or {"mode": "any", "allowed": [], "maxLatencyMs": None},
+        "fill": model.get("fill") or {"minPlayers": None, "backfill": False},
     }
     return {
         "gameSlug": game_slug,
@@ -330,6 +339,10 @@ def _model_flags(command):
     """Attach the shared queue-model flags to a create/update command."""
     options = [
         click.option("--display-name", default=None, help="Human display name (e.g. '5v5 Conquest')."),
+        click.option("--min-players", type=int, default=None,
+                     help="Minimum total players to START a new match (team shape is the max; 0 = full-fill)."),
+        click.option("--backfill/--no-backfill", default=None,
+                     help="Join-in-progress: seat searchers into an open, live, not-full match."),
         click.option("--mode-slug", default=None, help="Explicit mode id (create only; derived otherwise)."),
         click.option("--teams", type=int, default=None, help="Team count."),
         click.option("--team-size", type=int, default=None, help="Players per team."),
@@ -395,6 +408,10 @@ def queue_show(key, game, as_json) -> None:
     allowed = ", ".join(regions.get("allowed") or []) or "-"
     click.echo(
         f"  regions: {regions.get('mode', 'any')}  allowed: {allowed}  gate: {regions.get('maxLatencyMs')}"
+    )
+    fill = model.get("fill") or {}
+    click.echo(
+        f"  fill: min {fill.get('minPlayers') or 'full'}  backfill: {'on' if fill.get('backfill') else 'off'}"
     )
     click.echo(f"  waiting: {q.get('queuedCount', 0)}")
 
