@@ -387,6 +387,94 @@ def channel_set(channel_name, version, managed) -> None:
         fg="green", bold=True))
 
 
+@channel.command(name="unset")
+@click.argument("channel_name", metavar="CHANNEL")
+@click.option("--game", default=None, help="Game slug (else the project's .foundry gameId).")
+@click.option("--managed", is_flag=True,
+              help="Managed: fid removes the pointer + re-signs the index via your KMS key. "
+                   "Default is BYO (re-sign locally, then sync fid).")
+def channel_unset(channel_name, game, managed) -> None:
+    """Remove CHANNEL's pointer — unsetting stable delists the game publicly; snapshot stays the private test channel.
+
+    The pointer lives INSIDE the signed index.json. BYO (default): remove it, re-sign
+    the index on THIS machine + upload it, then call fid so its channel state syncs
+    (fid verifies the manifest no longer carries the channel). --managed: fid does the
+    signed removal server-side. Re-point later with `foundry fcm channel set`.
+    """
+    ch = channel_name.strip().lower()
+    slug = (game or "").strip().lower() or None
+    token = auth.access_token()
+
+    if managed:
+        # fid removes the pointer + re-signs the index via the publisher's KMS key server-side.
+        if not slug:
+            cfg = _load_publisher_config()
+            slug = (cfg.get("gameId") or "").strip().lower()
+        resp = fid.api_request(f"/v1/fcm/games/{slug}/channels/{ch}", method="DELETE", token=token)
+        _echo_channel_removed(slug, ch, resp)
+        return
+
+    from foundry_cli.core import minisign, fcm_manifest as fm
+
+    cfg = _load_publisher_config()
+    slug = slug or (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+
+    key = minisign.load()
+    if not key:
+        raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+
+    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not index:
+        raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    channels = index.get("channels") or {}
+    if ch not in channels:
+        # Refuse a no-op: nothing to remove, so never upload/re-sign anything.
+        raise click.ClickException(f"Channel '{ch}' is not set.")
+    prev = channels[ch]
+    del index["channels"][ch]
+    from datetime import datetime, timezone
+    index["updatedAt"] = datetime.now(timezone.utc).isoformat()
+
+    root_bytes = fm.serialize(index)
+    sig_text = minisign.sign_bytes(
+        root_bytes, key, f"signature for {publisher}/{slug} index",
+        f"{publisher}/{slug}@{prev}")
+    click.echo(click.style(f"✓ Re-signed index.json locally with key {key['keyId']}", fg="green"))
+
+    # prepare/PUT with files=[] — only the re-signed manifest objects move (the exact
+    # channel-set presign flow). fid's DELETE below is the finalize: it verifies the
+    # uploaded manifest no longer carries the channel, then syncs its own channel state
+    # (a 409 here means the uploaded index still carries the channel — re-run to re-sign).
+    prep = fid.api_request(
+        f"/v1/fcm/games/{slug}/publish/prepare", method="POST", token=token,
+        body={"version": prev, "prerelease": False, "files": []})
+    uploads = (prep or {}).get("uploads") or {}
+    _put_bytes(uploads["index"], root_bytes, "application/json")
+    _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
+
+    resp = fid.api_request(f"/v1/fcm/games/{slug}/channels/{ch}", method="DELETE", token=token)
+    _echo_channel_removed(slug, ch, resp, prev=prev)
+
+
+def _echo_channel_removed(slug: str, ch: str, resp, prev: str | None = None) -> None:
+    """Success line + liveSync surfacing for a channel removal (shared BYO/managed)."""
+    consequence = ("the game is no longer publicly listed" if ch == "stable"
+                   else "the channel pointer is cleared")
+    was = f" (was {prev})" if prev else ""
+    click.echo(click.style(
+        f"✓ Removed {ch} from {slug}{was} — {consequence}.", fg="green", bold=True))
+    if isinstance(resp, dict) and resp.get("liveSync"):
+        sync = resp["liveSync"]
+        if sync == "FAILED":
+            click.echo(click.style(
+                f"warning: live manifest sync FAILED: {resp.get('liveError') or 'unknown'} — "
+                "re-run to retry.", fg="yellow"))
+        else:
+            live = resp.get("liveVersion")
+            click.echo(f"  live manifest sync: {sync}" + (f" (live: {live})" if live else ""))
+
+
 def _put_bytes(url: str, data: bytes, content_type: str) -> None:
     """PUT raw bytes to a presigned URL (small manifest objects)."""
     import tempfile
