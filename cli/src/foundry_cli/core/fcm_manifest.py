@@ -93,7 +93,8 @@ def merge_release(
 ) -> dict:
     """Add this version to the (possibly existing) root index. Prior releases keep their
     recorded releaseDocSha256 (their docs are immutable + already published). `channel`
-    non-None points that channel at this version (None = prerelease, pointer untouched)."""
+    non-None points that channel at this version; None leaves every pointer untouched
+    (prerelease publishes pass "snapshot" so the private test channel tracks them)."""
     root = existing or {
         "manifestSchemaVersion": "3", "id": game_id, "publisher": publisher, "title": title,
         "description": "", "iconUrl": "", "bannerUrl": "",

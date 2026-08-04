@@ -200,7 +200,7 @@ def _load_publisher_config() -> dict:
                 type=click.Path(exists=True, file_okay=False, resolve_path=True))
 @click.option("--version", required=True, help="Release version, e.g. 1.0.0.")
 @click.option("--prerelease", is_flag=True,
-              help="Add the release but leave the channel pointer untouched (staged rollout).")
+              help="Publish to the private test channel (snapshot); stable is untouched.")
 @click.option("--channel", default="stable", show_default=True,
               help="Channel this release activates (ignored with --prerelease).")
 @click.option("--min-launcher", "min_launcher", default="0.9.0", show_default=True,
@@ -255,7 +255,7 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
         root = fm.merge_release(
             existing, game_id=slug, publisher=publisher, title=title, version=version,
             doc_sha256=doc_sha, total_size=total, min_launcher_version=min_launcher,
-            mandatory=False, channel=(None if prerelease else channel),
+            mandatory=False, channel=("snapshot" if prerelease else channel),
         )
         root_bytes = fm.serialize(root)
         sig_text = minisign.sign_bytes(
@@ -286,10 +286,12 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
 
     # 5. finalize — BYO: fid verifies the CLI-signed objects. Managed: fid assembles + KMS-signs.
     fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
-                    body={"version": version, "prerelease": prerelease, "channel": channel,
+                    body={"version": version, "prerelease": prerelease,
+                          "channel": ("snapshot" if prerelease else channel),
                           "minLauncher": min_launcher})
     signed = "fid (managed KMS)" if managed else f"key {key['keyId']} (BYO)"
-    where = "added (prerelease)" if prerelease else f"live on {channel}"
+    where = ("added (prerelease) - live on the private test channel (snapshot)"
+             if prerelease else f"live on {channel}")
     click.echo(click.style(f"✓ Published {slug} {version} — {where}. Signed by {signed}.",
                            fg="green", bold=True))
 

@@ -295,6 +295,8 @@ def _apply_flags(model: dict, **flags) -> dict:
         fill["backfill"] = flags["backfill"]
     if fill:
         m["fill"] = fill
+    if flags.get("access") is not None:
+        m["access"] = str(flags["access"]).lower()
     return m
 
 
@@ -307,7 +309,7 @@ def _model_to_request(model: dict, game_slug: str) -> dict:
         "regions": model.get("regions") or {"mode": "any", "allowed": [], "maxLatencyMs": None},
         "fill": model.get("fill") or {"minPlayers": None, "backfill": False},
     }
-    return {
+    request = {
         "gameSlug": game_slug,
         "displayName": str(model.get("displayName") or "").strip(),
         "modeSlug": model.get("modeSlug"),
@@ -318,6 +320,11 @@ def _model_to_request(model: dict, game_slug: str) -> dict:
         "regionPref": None,
         "rules": json.dumps(rules),
     }
+    # `access` rides top-level and ONLY when the user set it (fid treats an absent
+    # access on PUT as "unchanged"; on POST it defaults to open).
+    if model.get("access") is not None:
+        request["access"] = model["access"]
+    return request
 
 
 def _find_queue(token: str, key: str, game: str | None = None) -> dict:
@@ -333,6 +340,7 @@ def _find_queue(token: str, key: str, game: str | None = None) -> dict:
 
 
 _MODE_CHOICE = click.Choice(["any", "allowlist", "player-selected"], case_sensitive=False)
+_ACCESS_CHOICE = click.Choice(["open", "allowlist"], case_sensitive=False)
 
 
 def _model_flags(command):
@@ -343,6 +351,8 @@ def _model_flags(command):
                      help="Minimum total players to START a new match (team shape is the max; 0 = full-fill)."),
         click.option("--backfill/--no-backfill", default=None,
                      help="Join-in-progress: seat searchers into an open, live, not-full match."),
+        click.option("--access", type=_ACCESS_CHOICE, default=None,
+                     help="Private (allowlist) queues only admit players on the queue's allowlist."),
         click.option("--mode-slug", default=None, help="Explicit mode id (create only; derived otherwise)."),
         click.option("--teams", type=int, default=None, help="Team count."),
         click.option("--team-size", type=int, default=None, help="Players per team."),
@@ -384,9 +394,11 @@ def queue_list(game) -> None:
         return
     for q in rows:
         regions = (q.get("model") or {}).get("regions") or {}
+        private = "  [private]" if q.get("access") == "allowlist" else ""
         click.echo(
             click.style(q.get("name", "?"), fg="cyan")
             + f"  region={regions.get('mode', 'any')}  waiting={q.get('queuedCount', 0)}  {q.get('id')}"
+            + click.style(private, fg="yellow")
         )
 
 
@@ -403,6 +415,8 @@ def queue_show(key, game, as_json) -> None:
         click.echo(json.dumps(model, indent=2))
         return
     click.echo(click.style(q.get("name", "?"), fg="cyan", bold=True) + f"  {q.get('frn') or ''}")
+    if q.get("access"):  # older fid responses omit it — degrade silently
+        click.echo(f"  access: {q['access']}")
     click.echo(f"  teams: {model.get('teamCount')} x {model.get('teamSize')}  maxParty: {model.get('maxPartySize')}")
     regions = model.get("regions") or {}
     allowed = ", ".join(regions.get("allowed") or []) or "-"
@@ -441,7 +455,10 @@ def queue_update(key, **flags) -> None:
     token = auth.access_token()
     q = _find_queue(token, key, game=flags.get("game"))
     # Seed from the queue's CURRENT model, then overlay a --model file, then the individual flags.
-    base = q.get("model") or {}
+    # `access` is stripped from the seed: PUT treats an ABSENT access as unchanged, so only an
+    # explicit --access (or a --model file that sets it) may put it on the wire.
+    base = dict(q.get("model") or {})
+    base.pop("access", None)
     if flags.get("model_file"):
         base = {**base, **_load_model_file(flags["model_file"])}
     model = _apply_flags(base, **flags)
