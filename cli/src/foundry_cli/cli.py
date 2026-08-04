@@ -47,6 +47,7 @@ from foundry_cli.commands.build_cmd import build, fcm
 from foundry_cli.commands.package import package
 from foundry_cli.commands.publish import publish
 from foundry_cli.commands.fmms import fmms
+from foundry_cli.commands.fcg import fcg
 from foundry_cli.commands.keys_cmd import keys
 
 def register_commands(root: click.Group) -> None:
@@ -64,6 +65,7 @@ def register_commands(root: click.Group) -> None:
     root.add_command(build)  # DEPRECATED hidden alias of `fcm`
     root.add_command(publish)  # hidden shim -> package / fcm push
     root.add_command(fmms)
+    root.add_command(fcg)
     root.add_command(keys)  # BYO publisher signing keys
 
 
