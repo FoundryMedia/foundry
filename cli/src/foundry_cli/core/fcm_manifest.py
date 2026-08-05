@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 import urllib.request
 from datetime import datetime, timezone
 from pathlib import Path
@@ -69,13 +70,38 @@ def release_doc(game_id: str, version: str, files: list[dict], total_size: int) 
 
 
 def fetch_index(cdn_base: str) -> dict | None:
-    """Fetch the game's current signed root index.json (to accumulate releases), or None."""
+    """Fetch the game's current signed root index.json (to accumulate releases), or None.
+
+    Cache-busted: the CDN path (CloudFront 302 -> r2.dev) can serve a STALE edge
+    copy, and re-signing a stale index CLOBBERS every release published since
+    (this happened live 2026-08-04 - Conquest lost releases 0.5.0-0.17.0 to a
+    stale-copy re-sign). The query param forces a fresh cache key; callers that
+    MUTATE the index must also pass the result through assert_coherent().
+    """
     try:
-        req = urllib.request.Request(f"{cdn_base}/index.json", headers=_UA)
+        cb = int(time.time())
+        req = urllib.request.Request(f"{cdn_base}/index.json?cb={cb}", headers=_UA)
         with urllib.request.urlopen(req, timeout=30) as r:
             return json.loads(r.read())
     except Exception:
         return None
+
+
+def assert_coherent(index: dict) -> None:
+    """Refuse an internally inconsistent index (the stale-cache fingerprint).
+
+    Every channel pointer must name a version present in releases{}. A copy where
+    they disagree is a mixed/stale read - re-signing it would drop releases, so
+    mutating commands hard-stop instead.
+    """
+    releases = index.get("releases") or {}
+    for ch, version in (index.get("channels") or {}).items():
+        if version not in releases:
+            raise ValueError(
+                f"fetched index is internally inconsistent (channel '{ch}' -> "
+                f"{version}, which is missing from releases). This is the "
+                "stale-CDN-copy fingerprint - re-signing it would DROP releases. "
+                "Wait a minute and retry.")
 
 
 def merge_release(

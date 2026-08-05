@@ -252,6 +252,11 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
     root_bytes = sig_text = None
     if not managed:
         existing = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+        if existing:
+            try:
+                fm.assert_coherent(existing)
+            except ValueError as e:
+                raise click.ClickException(str(e))
         root = fm.merge_release(
             existing, game_id=slug, publisher=publisher, title=title, version=version,
             doc_sha256=doc_sha, total_size=total, min_launcher_version=min_launcher,
@@ -359,6 +364,10 @@ def channel_set(channel_name, version, managed) -> None:
     index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
     if not index:
         raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    try:
+        fm.assert_coherent(index)
+    except ValueError as e:
+        raise click.ClickException(str(e))
     releases = index.get("releases") or {}
     if version not in releases:
         raise click.ClickException(
@@ -427,6 +436,10 @@ def channel_unset(channel_name, game, managed) -> None:
     index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
     if not index:
         raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    try:
+        fm.assert_coherent(index)
+    except ValueError as e:
+        raise click.ClickException(str(e))
     channels = index.get("channels") or {}
     if ch not in channels:
         # Refuse a no-op: nothing to remove, so never upload/re-sign anything.
