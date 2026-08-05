@@ -100,3 +100,19 @@ def save(rec: dict) -> None:
         os.chmod(_KEY_FILE, stat.S_IRUSR | stat.S_IWUSR)  # 0600 (no-op on Windows)
     except OSError:
         pass
+
+
+def sig_key_id(sig_text: str) -> str | None:
+    """The signer's keyId (display hex) from a minisign signature blob, or None.
+
+    Lets a BYO command check WHO signs the live manifest before re-signing it:
+    a mismatch with the local key means the publisher is platform-managed (KMS)
+    or rotated - local signing would publish an index launchers reject.
+    """
+    import base64
+    try:
+        lines = [l for l in sig_text.splitlines() if l and not l.startswith("untrusted")]
+        raw = base64.b64decode(lines[0])
+        return _keyid_hex(raw[2:10])  # 2-byte alg tag, then the 8-byte key id
+    except Exception:
+        return None

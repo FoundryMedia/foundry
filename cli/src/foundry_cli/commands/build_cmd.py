@@ -236,6 +236,7 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
         if not key:
             raise click.ClickException(
                 "No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+        _guard_byo_signer(publisher, slug, key)
 
     token = auth.access_token()
 
@@ -360,6 +361,7 @@ def channel_set(channel_name, version, managed) -> None:
     key = minisign.load()
     if not key:
         raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+    _guard_byo_signer(publisher, slug, key)
 
     index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
     if not index:
@@ -432,6 +434,7 @@ def channel_unset(channel_name, game, managed) -> None:
     key = minisign.load()
     if not key:
         raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+    _guard_byo_signer(publisher, slug, key)
 
     index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
     if not index:
@@ -486,6 +489,25 @@ def _echo_channel_removed(slug: str, ch: str, resp, prev: str | None = None) -> 
         else:
             live = resp.get("liveVersion")
             click.echo(f"  live manifest sync: {sync}" + (f" (live: {live})" if live else ""))
+
+
+def _guard_byo_signer(publisher: str, slug: str, key: dict) -> None:
+    """Refuse local signing when the LIVE manifest is signed by a DIFFERENT key.
+
+    A mismatch means the publisher is platform-managed (KMS) or the key rotated -
+    a locally-signed index gets rejected by every launcher. Bit live 2026-08-05:
+    a retired BYO key re-signed a managed game's index and the launcher went dark.
+    """
+    from foundry_cli.core import minisign, fcm_manifest as fm
+    sig = fm.fetch_index_sig(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not sig:
+        return  # first publish / sig unreachable - nothing to compare against
+    live = minisign.sig_key_id(sig)
+    if live and live != key["keyId"]:
+        raise click.ClickException(
+            f"The live manifest is signed by key {live}, but your local key is {key['keyId']}. "
+            "This publisher looks platform-managed (or the key rotated). Use --managed, or "
+            "re-register your local key before signing locally.")
 
 
 def _put_bytes(url: str, data: bytes, content_type: str) -> None:

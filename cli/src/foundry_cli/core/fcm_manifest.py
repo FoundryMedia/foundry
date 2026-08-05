@@ -153,3 +153,14 @@ def serialize(obj: dict) -> bytes:
 
 def sha256_bytes(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
+
+
+def fetch_index_sig(cdn_base: str) -> str | None:
+    """Fetch the live index signature (cache-busted), or None when absent."""
+    try:
+        cb = int(time.time())
+        req = urllib.request.Request(f"{cdn_base}/index.json.minisig?cb={cb}", headers=_UA)
+        with urllib.request.urlopen(req, timeout=30) as r:
+            return r.read().decode("utf-8")
+    except Exception:
+        return None
