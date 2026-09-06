@@ -4,9 +4,12 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+import subprocess
+import sys
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 
 from textual.app import App, ComposeResult
@@ -14,8 +17,9 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual import events
-from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
+from textual.widgets import Footer, Label, ListItem, ListView, RichLog
 from rich.ansi import AnsiDecoder
+from rich.markup import escape
 from rich.text import Text
 import webbrowser
 
@@ -31,6 +35,7 @@ from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
 from foundry_cli.core.util.logger import LogLine, format_log_line
 
 from foundry_cli.release.versioning import get_local_version
+from foundry_cli.release.update_check import check_for_updates
 
 
 def _sanitize_id(name: str) -> str:
@@ -47,7 +52,93 @@ def _sanitize_id(name: str) -> str:
     if result and result[0].isdigit():
         result = f"s-{result}"
     return result or "unknown"
-from foundry_cli.release.update_check import check_for_updates
+
+
+def _win32_set_clipboard(text: str) -> None:
+    """Set CF_UNICODETEXT via the Win32 clipboard API (no subprocess, no BOM)."""
+    import ctypes
+    from ctypes import wintypes
+
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    # 64-bit safety: default ctypes restype is a 32-bit int — pointers truncate.
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    if not user32.OpenClipboard(None):
+        raise OSError("OpenClipboard failed")
+    try:
+        user32.EmptyClipboard()
+        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not handle:
+            raise OSError("GlobalAlloc failed")
+        locked = kernel32.GlobalLock(handle)
+        if not locked:
+            kernel32.GlobalFree(handle)
+            raise OSError("GlobalLock failed")
+        ctypes.memmove(locked, data, len(data))
+        kernel32.GlobalUnlock(handle)
+        if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+            kernel32.GlobalFree(handle)
+            raise OSError("SetClipboardData failed")
+        # Ownership of the handle passed to the clipboard — do not free it.
+    finally:
+        user32.CloseClipboard()
+
+
+def _copy_text_to_clipboard(text: str) -> str | None:
+    """Copy text to the system clipboard. Returns an error message, or None on success.
+
+    Tries pyperclip if installed, then the platform's native clipboard command.
+    Textual enables terminal mouse tracking, which eats drag-selection in most
+    terminals — this keybind-driven copy is the reliable path (Shift+drag is the
+    terminal-level bypass for ad-hoc selection).
+    """
+    try:
+        import pyperclip  # type: ignore
+
+        pyperclip.copy(text)
+        return None
+    except Exception:
+        pass
+
+    try:
+        if sys.platform == "win32":
+            try:
+                _win32_set_clipboard(text)
+                return None
+            except Exception:
+                # clip.exe fallback: a UTF-16 BOM makes it decode as Unicode
+                # (the BOM lands in the clipboard text — acceptable for a fallback).
+                subprocess.run(["clip"], input=text.encode("utf-16"), check=True)
+                return None
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+            return None
+        for cmd in (
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ):
+            try:
+                subprocess.run(cmd, input=text.encode("utf-8"), check=True)
+                return None
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                continue
+        return "no clipboard tool found (install xclip, xsel, or wl-clipboard)"
+    except Exception as e:
+        return str(e)
+
 
 def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
     log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
@@ -61,8 +152,6 @@ def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | No
     else:
         log_list.append(Text.from_markup("[#29B8DB]Run the latest installer from GitHub Releases to upgrade.[/]"))
     log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
-from foundry_cli.release.update_check import check_for_updates
-
 
 
 @dataclass(frozen=True)
@@ -249,6 +338,10 @@ class ServicesUI(App[None]):
         # Service control
         Binding("r", "restart", "Restart"),
 
+        # Log copy / export
+        Binding("c", "copy_log", "Copy Log"),
+        Binding("e", "export_log", "Export Log"),
+
         # Log scrolling (when log is focused)
         Binding("u", "log_line_up", "Scroll Up"),
         Binding("d", "log_line_down", "Scroll Down"),
@@ -313,6 +406,9 @@ class ServicesUI(App[None]):
         self._spinner_index: int = 0
         self._sidebar_visible: bool = True
 
+        # Memoized update-check result (network call — once per session, not per service)
+        self._update_info: Optional[tuple[str, Optional[str], Optional[str]]] = None
+
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="sidebar"):
@@ -356,19 +452,6 @@ class ServicesUI(App[None]):
             icon_lbl.update("?")
             icon_lbl.styles.color = "#888888"
 
-    def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
-        log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
-        line = (
-            Text.from_markup("[magenta bold]Update available: [/]" +
-                f"[red bold]{local}[/][yellow bold] → [/][green bold]{latest}[/]")
-        )
-        log_list.append(line)
-        if url:
-            log_list.append(Text.from_markup(f"[cyan]Download: {url}[/]"))
-        else:
-            log_list.append(Text.from_markup("[cyan]Run the latest installer from GitHub Releases to upgrade.[/]"))
-        log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
-
     def _write_banner_to_service(self, service_name: str) -> None:
         """Write the Foundry ASCII banner and update banner to a service's log buffer."""
         try:
@@ -386,6 +469,8 @@ class ServicesUI(App[None]):
             "",
             f"[#3B8EEA bold]                         v{version}[/]",
             "",
+            "[#888888]Select text: Shift+drag  -  'c' copy log  -  'e' export log[/]",
+            "",
         ]
 
         log_list = self._logs.setdefault(service_name, [])
@@ -393,8 +478,10 @@ class ServicesUI(App[None]):
             styled = Text.from_markup(line)
             log_list.append(styled)
 
-        # Check for updates and print update banner if needed
-        local, latest, url = check_for_updates()
+        # Check for updates once per session; reuse the result for every service
+        if self._update_info is None:
+            self._update_info = check_for_updates()
+        local, latest, url = self._update_info
         if latest:
             _print_update_banner_to_log(log_list, local, latest, url)
 
@@ -688,6 +775,55 @@ class ServicesUI(App[None]):
     def action_log_fast_right(self) -> None:
         log = self.query_one("#log", RichLog)
         log.scroll_to(x=log.scroll_x + 4)
+
+    def _selected_log_text(self) -> Optional[str]:
+        """Plain-text dump of the selected service's log buffer."""
+        if not self._selected:
+            return None
+        lines = self._logs.get(self._selected)
+        if not lines:
+            return None
+        return "\n".join(t.plain for t in lines)
+
+    def _notify_selected(self, level: str, message: str) -> None:
+        """Append a status line to the selected service's log buffer + pane."""
+        line = format_log_line(
+            LogLine(timestamp=datetime.now(), level=level, message=escape(message))
+        )
+        styled = Text.from_markup(line)
+        if self._selected:
+            self._logs.setdefault(self._selected, []).append(styled)
+        try:
+            self.query_one("#log", RichLog).write(styled)
+        except NoMatches:
+            pass
+
+    def action_copy_log(self) -> None:
+        """Copy the selected service's full log to the system clipboard ('c')."""
+        text = self._selected_log_text()
+        if text is None:
+            return
+        err = _copy_text_to_clipboard(text + "\n")
+        if err is None:
+            count = text.count("\n") + 1
+            self._notify_selected("INFO", f"Copied {count} log lines to clipboard")
+        else:
+            self._notify_selected("ERROR", f"Clipboard copy failed: {err}")
+
+    def action_export_log(self) -> None:
+        """Write the selected service's log to ~/.foundry/logs/ ('e')."""
+        text = self._selected_log_text()
+        if text is None or not self._selected:
+            return
+        try:
+            logs_dir = Path.home() / ".foundry" / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            out = logs_dir / f"{_sanitize_id(self._selected)}-{stamp}.log"
+            out.write_text(text + "\n", encoding="utf-8")
+            self._notify_selected("INFO", f"Log exported: {out}")
+        except Exception as e:
+            self._notify_selected("ERROR", f"Log export failed: {e}")
 
     def action_log_top(self) -> None:
         self.query_one("#log", RichLog).scroll_to(y=0, animate=False)
