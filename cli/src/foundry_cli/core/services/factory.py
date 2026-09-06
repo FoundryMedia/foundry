@@ -81,13 +81,14 @@ def create_runner(
             debug_config=cfg.debug,
         )
 
-    # Next.js
-    elif rt == ServiceRuntime.nextjs:
+    # Node dev servers (Next.js, Vite — incl. a Tauri shell via run.script)
+    elif rt in (ServiceRuntime.nextjs, ServiceRuntime.vite):
         runner = NodeServiceRunner(
             service,
             debug=debug,
             port=cfg.port,
             command=command,
+            script=cfg.script,
             args=cfg.args,
             env=cfg.env,
         )

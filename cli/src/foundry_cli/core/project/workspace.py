@@ -725,11 +725,13 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
         )
 
     # Combine: Node packages first (dependencies before dependents), then other
-    # services. A manifest-declared service whose directory is ALSO a Node
-    # package (e.g. a vite frontend) is served by the Node path — drop the
-    # duplicate so it isn't started twice.
-    node_paths = {str(s.path) for s in node_services}
-    non_node_services = [s for s in non_node_services if str(s.path) not in node_paths]
+    # services. A manifest-declared service whose NAME is already served by the
+    # Node path (e.g. a vite frontend) is dropped so it isn't started twice —
+    # dedupe by name, NOT path: two manifest services may share one directory
+    # (foundry-app's `web` and `desktop` both live in app/, differing only in
+    # which package.json script they run).
+    node_names = {s.name for s in node_services}
+    non_node_services = [s for s in non_node_services if s.name not in node_names]
     all_services = node_services + non_node_services
 
     # Filter out disabled services

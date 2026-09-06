@@ -393,6 +393,9 @@ class ServiceConfig:
     actuator_port: int | None = None
     health_check: HealthCheckConfig | None = None
     debug: DebugConfig | None = None
+    # Node services: package.json script to run instead of the run command
+    # name (e.g. script "tauri" + args ["dev"] -> `pnpm run tauri dev`).
+    script: str | None = None
     args: tuple[str, ...] = field(default_factory=tuple)
     env: dict[str, str] = field(default_factory=dict)
     # Run strictness controls (local/workspace overrides or manifest run block)
@@ -590,6 +593,7 @@ class ServiceConfig:
             actuator_port=actuator_port,
             health_check=health_check,
             debug=debug,
+            script=(run if isinstance(run, dict) else data).get("script"),
             args=args,
             env=env,
             strict_mode_enabled=strict_mode_enabled,
