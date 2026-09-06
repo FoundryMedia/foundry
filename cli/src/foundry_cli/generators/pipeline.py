@@ -322,7 +322,8 @@ def write_pipeline(
         pipeline_path_str = ci.get("pipeline", ".github/workflows/ci-cd-pipeline.yml")
         # Try manifest.path first, fall back to cwd
         if hasattr(manifest, "path") and manifest.path:
-            output_path = manifest.path.parent / pipeline_path_str
+            from foundry_cli.core.project.workspace import manifest_workspace_root
+            output_path = manifest_workspace_root(manifest.path) / pipeline_path_str
         else:
             output_path = Path.cwd() / pipeline_path_str
 

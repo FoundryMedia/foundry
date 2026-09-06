@@ -148,7 +148,14 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             if app_args:
                 cmd.append(f"-Dspring-boot.run.arguments={' '.join(app_args)}")
 
-        run_env = {**os.environ, **self._env} if self._env else None
+        run_env = {**os.environ, **self._env}
+        if "JAVA_HOME" not in run_env:
+            # mvnw hard-requires JAVA_HOME; derive it from `java` on PATH so a
+            # shell without the variable still runs.
+            import shutil
+            java = shutil.which("java")
+            if java:
+                run_env["JAVA_HOME"] = str(Path(java).parent.parent)
         proc = await self._spawn(cmd, cwd=self.cwd, env=run_env)
 
         # Start monitor immediately - emits "failed" if process ever exits

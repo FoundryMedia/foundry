@@ -20,6 +20,20 @@ class SshTunnelConfig:
     user: str = "ec2-user"
     password: str | None = None  # Path to SSH private key file
 
+    # ── Optional AWS autowire (all composable — absent = fully manual) ──
+    # bastion_tag: resolve `host` by EC2 tag:Name when the host var is unset.
+    # key_secret: fetch the pem from Secrets Manager (JSON key `private_key_pem`)
+    #             into `password`'s path when the file is missing.
+    # credentials_secret: DB credentials secret whose fields are injected as env
+    #             into the service process (never written to disk).
+    # inject_env: override the default env-var names for injected credentials,
+    #             mapping ENV_VAR -> secret field (e.g. {"PGUSER": "username"}).
+    bastion_tag: str | None = None
+    key_secret: str | None = None
+    credentials_secret: str | None = None
+    inject_env: dict[str, str] = field(default_factory=dict)
+    aws_region: str | None = None
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SshTunnelConfig":
         def _expand(value: Any) -> Any:
@@ -27,6 +41,7 @@ class SshTunnelConfig:
                 return os.path.expandvars(value)
             return value
 
+        inject_env = data.get("injectEnv", {})
         return cls(
             local_port=data["localPort"],
             remote_host=_expand(data["remoteHost"]),
@@ -34,6 +49,11 @@ class SshTunnelConfig:
             host=_expand(data["host"]),
             user=_expand(data.get("user", "ec2-user")),
             password=_expand(data.get("password")),
+            bastion_tag=data.get("bastionTag"),
+            key_secret=data.get("keySecret"),
+            credentials_secret=data.get("credentialsSecret"),
+            inject_env=dict(inject_env) if isinstance(inject_env, dict) else {},
+            aws_region=data.get("awsRegion"),
         )
 
 
@@ -381,6 +401,11 @@ class ServiceConfig:
     ssh_tunnel: SshTunnelConfig | None = None
     sidecars: dict[str, "SidecarConfig"] = field(default_factory=dict)
 
+    # Safety env injected ONLY when run dev resolves this service to the
+    # prod-tunnel target (e.g. disable schedulers that would act on real data).
+    # Manifest shape: "devProdGuard": { "env": { "KEY": "value" } }
+    dev_prod_guard_env: dict[str, str] = field(default_factory=dict)
+
     # ── Convenience aliases (backward compat) ────────────────────────────
 
     @property
@@ -544,6 +569,12 @@ class ServiceConfig:
                 if isinstance(cfg, dict):
                     svc_environments[env_name] = EnvironmentConfig.from_dict(cfg)
 
+        # ── Prod-guard env (dev-only safety, see field docstring) ────
+        dev_prod_guard_env: dict[str, str] = {}
+        guard = data.get("devProdGuard")
+        if isinstance(guard, dict) and isinstance(guard.get("env"), dict):
+            dev_prod_guard_env = {str(k): str(v) for k, v in guard["env"].items()}
+
         return cls(
             scope=scope,
             repository=data.get("repository"),
@@ -565,6 +596,7 @@ class ServiceConfig:
             strict_health_ports=strict_health_ports,
             ssh_tunnel=ssh_tunnel,
             sidecars=sidecars,
+            dev_prod_guard_env=dev_prod_guard_env,
         )
 
 

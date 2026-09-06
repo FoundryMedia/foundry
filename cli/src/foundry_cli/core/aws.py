@@ -257,6 +257,32 @@ def resolve_hosted_zone_id(
 # ------------------------------------------------------------------
 
 
+def resolve_instance_public_ip(
+    tag_name: str,
+    region: str | None = None,
+) -> str:
+    """Resolve the public IP of a running EC2 instance by its Name tag.
+
+    Used by the dev-run tunnel autowire (e.g. a bastion host whose IP changes
+    across stop/start cycles).
+    """
+    data = _run_aws(
+        "ec2", "describe-instances",
+        "--filters",
+        f"Name=tag:Name,Values={tag_name}",
+        "Name=instance-state-name,Values=running",
+        "--query", "Reservations[0].Instances[0].PublicIpAddress",
+        region=region,
+    )
+    if not isinstance(data, str) or not data:
+        raise FoundryError(
+            f"No running EC2 instance found with tag:Name={tag_name}"
+            + (f" in {region}" if region else "")
+            + ".\n  Check the instance is running and your AWS profile targets the right account/region."
+        )
+    return data
+
+
 def get_secret_value(
     secret_id: str,
     region: str | None = None,

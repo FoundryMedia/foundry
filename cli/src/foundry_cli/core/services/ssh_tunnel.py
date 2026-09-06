@@ -24,6 +24,30 @@ logging.getLogger("paramiko").setLevel(logging.WARNING)
 logging.getLogger("sshtunnel").setLevel(logging.WARNING)
 
 
+def load_ssh_pkey(key_file: str | Path):
+    """Pre-load a private key into a paramiko PKey object.
+
+    paramiko 4.x removed DSSKey, but sshtunnel's ``read_private_key_file``
+    still references it whenever it is handed a key *path* — so passing a
+    string path crashes with ``AttributeError: module 'paramiko' has no
+    attribute 'DSSKey'``. Handing SSHTunnelForwarder an already-loaded PKey
+    object skips that code path entirely.
+
+    Returns the PKey, or None if no supported loader accepts the file
+    (callers fall back to the path-string behavior so the original error
+    surfaces).
+    """
+    import paramiko
+
+    loaders = [paramiko.RSAKey, paramiko.Ed25519Key, paramiko.ECDSAKey]
+    for loader in loaders:
+        try:
+            return loader.from_private_key_file(str(key_file))
+        except Exception:
+            continue
+    return None
+
+
 @dataclass(frozen=True)
 class SshTunnelConfig:
     """Configuration for an SSH tunnel.
@@ -186,10 +210,11 @@ class SshTunnelRunner:
                 # via host.docker.internal (which resolves to a non-loopback IP
                 # on Docker Desktop). Binding to 127.0.0.1 would make the
                 # tunnel unreachable from containers.
+                pkey = load_ssh_pkey(key_file) if key_file else None
                 tunnel = SSHTunnelForwarder(
                     (cfg.host, 22),
                     ssh_username=cfg.user,
-                    ssh_pkey=str(key_file) if key_file else None,
+                    ssh_pkey=pkey if pkey is not None else (str(key_file) if key_file else None),
                     remote_bind_address=(cfg.remote_host, cfg.remote_port),
                     local_bind_address=("0.0.0.0", cfg.local_port),
                     set_keepalive=30.0,

@@ -27,10 +27,27 @@ class _UnsupportedServiceRunner(ServiceRunner):
         return _empty()
 
 
-def create_runner(service: DiscoveredService, *, debug: bool = False, command: str = "dev", migrate_db: bool = False):
+def create_runner(
+    service: DiscoveredService,
+    *,
+    debug: bool = False,
+    command: str = "dev",
+    migrate_db: bool = False,
+    workspace_root: Path | None = None,
+):
+    injected_env_keys: tuple[str, ...] = ()
+    dev_mode: str | None = None
+    if command == "dev" and workspace_root is not None:
+        # Resolve the service's dev target (prod-tunnel vs full-local) from its
+        # env stack BEFORE constructing runners — the tunnel and injected
+        # credentials depend on it. See core/project/dev_env.py.
+        from foundry_cli.core.project.dev_env import prepare_service_for_dev
+
+        service, dev_mode, injected_env_keys = prepare_service_for_dev(service, workspace_root)
+
     rt = service.runtime.runtime
     cfg = service.config
-    
+
     runner: ServiceRunner
 
     strict_health_ports = False
@@ -82,6 +99,17 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
     else:
         runner = _UnsupportedServiceRunner(service, command=command)
     
+    # Resolve the workspace root once (prefer the caller-provided one; fall
+    # back to walking up for a manifest — .foundry/foundry.json or foundry.json).
+    resolved_root = workspace_root
+    if resolved_root is None:
+        probe = service.path
+        while probe.parent != probe:
+            if (probe / ".foundry" / "foundry.json").exists() or (probe / "foundry.json").exists():
+                resolved_root = probe
+                break
+            probe = probe.parent
+
     # Wrap with migration support if --migrate-db and database config exists
     if migrate_db and cfg.database_config:
         from foundry_cli.core.project.manifest import DatabaseConfig as DC
@@ -90,35 +118,23 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
         # Determine tunnel local port for host override
         tunnel_local_port = cfg.ssh_tunnel.local_port if cfg.ssh_tunnel else None
 
-        # Get workspace root for resolving relative paths
-        workspace_root = service.path
-        while workspace_root.parent != workspace_root:
-            if (workspace_root / "foundry.json").exists():
-                break
-            workspace_root = workspace_root.parent
-
         runner = MigrationAwareRunner(
             inner_runner=runner,
             db_config=db_cfg,
-            workspace_root=workspace_root if (workspace_root / "foundry.json").exists() else service.path,
+            workspace_root=resolved_root or service.path,
             tunnel_local_port=tunnel_local_port,
         )
 
-    # Wrap with tunnel support if configured
+    # Wrap with tunnel support if configured (dev_env strips the tunnel for
+    # local-target services, so reaching here in dev means prod target).
     if cfg.ssh_tunnel is not None:
-        # Get workspace root from service path (go up to find foundry.json)
-        workspace_root = service.path
-        while workspace_root.parent != workspace_root:
-            if (workspace_root / "foundry.json").exists():
-                break
-            workspace_root = workspace_root.parent
-        
         runner = TunnelAwareRunner(
             inner_runner=runner,
             tunnel_config=cfg.ssh_tunnel,
-            workspace_root=workspace_root if (workspace_root / "foundry.json").exists() else None,
+            workspace_root=resolved_root,
+            injected_env_keys=injected_env_keys,
         )
-    
+
     return runner
 
 

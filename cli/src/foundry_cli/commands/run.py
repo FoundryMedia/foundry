@@ -101,7 +101,10 @@ def _run_services_ui(command: str, *, filter_svc: str | None = None, migrate_db:
             sidecar, workspace.root, debug=debug, sidecar_id=sidecar_id, display_name=display_name
         )
     for svc in services:
-        runners[svc.name] = create_runner(svc, debug=debug, command=command, migrate_db=migrate_db)
+        runners[svc.name] = create_runner(
+            svc, debug=debug, command=command, migrate_db=migrate_db,
+            workspace_root=workspace.root,
+        )
 
     app = ServicesUI(all_services, runners, debug=debug)
     

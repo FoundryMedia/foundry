@@ -87,23 +87,41 @@ def infer_service_kind(services_root: Path, service_dir: Path) -> ServiceKind:
 
 
 def find_manifest_path(start: Path | None = None) -> Path:
-    """Find the nearest `foundry.json` by walking up from `start` (or CWD)."""
+    """Find the nearest manifest by walking up from `start` (or CWD).
+
+    Per directory, `.foundry/foundry.json` is preferred (the multi-repo
+    convention for repos opted into an ops repo); a root-level `foundry.json`
+    is the legacy/monorepo location and remains fully supported.
+    """
 
     cur = (start or Path.cwd()).resolve()
     if cur.is_file():
         cur = cur.parent
 
     while True:
-        candidate = cur / "foundry.json"
-        if candidate.exists():
-            return candidate
+        for candidate in (cur / ".foundry" / "foundry.json", cur / "foundry.json"):
+            if candidate.exists():
+                return candidate
         if cur.parent == cur:
             break
         cur = cur.parent
 
     raise FoundryError(
-        "Could not locate project manifest (foundry.json) in the current directory or any parent directory."
+        "Could not locate project manifest (.foundry/foundry.json or foundry.json) "
+        "in the current directory or any parent directory."
     )
+
+
+def manifest_workspace_root(manifest_path: Path) -> Path:
+    """The workspace/repo root a manifest governs.
+
+    A manifest at `<repo>/.foundry/foundry.json` governs `<repo>`, not the
+    `.foundry` directory itself.
+    """
+    root = manifest_path.parent
+    if root.name == ".foundry":
+        return root.parent
+    return root
 
 
 def resolve_services_root(manifest: ProjectManifest) -> Path:
@@ -122,7 +140,7 @@ def resolve_services_root(manifest: ProjectManifest) -> Path:
             f"Invalid `servicesDir` in {manifest.path.name}: must be a relative path, got '{raw}'."
         )
 
-    root = (manifest.path.parent / rel).resolve()
+    root = (manifest_workspace_root(manifest.path) / rel).resolve()
     if not root.exists() or not root.is_dir():
         raise FoundryError(
             f"Could not locate services directory '{raw}' next to {manifest.path.name}. "
@@ -130,6 +148,39 @@ def resolve_services_root(manifest: ProjectManifest) -> Path:
         )
 
     return root
+
+
+_STACK_TYPE_TO_KIND = {
+    "backend": ServiceKind.backend,
+    "frontend": ServiceKind.frontend,
+    "worker": ServiceKind.worker,
+}
+
+
+def discover_manifest_services(manifest: ProjectManifest) -> list[DiscoveredService]:
+    """Resolve services straight from the manifest's service declarations.
+
+    Multi-repo manifests (schemaVersion >= 0.7.0) place each service at
+    ``services.<name>.path`` inside its own repository — there is no ``apps/``
+    directory to scan. A declared service whose directory is missing is
+    skipped so a partially-checked-out workspace still loads.
+    """
+    base = manifest_workspace_root(manifest.path)
+    services: list[DiscoveredService] = []
+    for name, cfg in manifest.services_config.items():
+        svc_dir = (base / Path(cfg.effective_path)).resolve()
+        if not svc_dir.is_dir():
+            continue
+        services.append(
+            DiscoveredService(
+                name=name,
+                path=svc_dir,
+                runtime=detect_runtime(svc_dir),
+                kind=_STACK_TYPE_TO_KIND.get(cfg.stack_type or "", ServiceKind.unknown),
+                config=cfg,
+            )
+        )
+    return services
 
 
 def _build_path_to_key_map(
@@ -396,8 +447,7 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
 
     manifest_path = find_manifest_path(start)
     manifest = load_manifest_from_path(manifest_path)
-    services_root = resolve_services_root(manifest)
-    workspace_root = manifest_path.parent
+    workspace_root = manifest_workspace_root(manifest_path)
 
     # Load workspace.yml path map for dir-name → manifest-key resolution
     path_to_key: dict[str, str] = {}
@@ -406,10 +456,27 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
     if ws_data and isinstance(ws_data.get("services"), dict):
         path_to_key = _build_path_to_key_map(workspace_root, ws_data["services"])
 
-    # Discover traditional services (Spring Boot, FastAPI, etc.) from apps/
-    traditional_services = discover_services(
-        services_root, manifest, path_to_key=path_to_key,
-    )
+    apps_root = workspace_root / Path(manifest.services_dir_name)
+    if apps_root.is_dir():
+        # Monorepo layout: scan the services directory (apps/ by default).
+        services_root = resolve_services_root(manifest)
+        traditional_services = discover_services(
+            services_root, manifest, path_to_key=path_to_key,
+        )
+    else:
+        # Multi-repo layout (v0.7.0): no apps/ dir — each declared service
+        # resolves via its own `path` relative to the manifest.
+        traditional_services = discover_manifest_services(manifest)
+        if not traditional_services:
+            # Nothing declared/resolvable either way: raise the original,
+            # descriptive services-directory error.
+            resolve_services_root(manifest)
+        services_root = workspace_root
+        # Let Node-package discovery resolve manifest keys too (e.g. the dir
+        # `app` carrying the manifest service `web`).
+        for svc_name, svc_cfg in manifest.services_config.items():
+            dir_name = Path(svc_cfg.effective_path).name
+            path_to_key.setdefault(dir_name, svc_name)
     
     # Filter to only non-Node services (Spring Boot, FastAPI)
     non_node_services = [
@@ -459,7 +526,12 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
             )
         )
 
-    # Combine: Node packages first (dependencies before dependents), then other services
+    # Combine: Node packages first (dependencies before dependents), then other
+    # services. A manifest-declared service whose directory is ALSO a Node
+    # package (e.g. a vite frontend) is served by the Node path — drop the
+    # duplicate so it isn't started twice.
+    node_paths = {str(s.path) for s in node_services}
+    non_node_services = [s for s in non_node_services if str(s.path) not in node_paths]
     all_services = node_services + non_node_services
 
     # Filter out disabled services
@@ -562,8 +634,10 @@ __all__ = [
     "DiscoveredSidecar",
     "ServiceKind",
     "find_manifest_path",
+    "manifest_workspace_root",
     "resolve_services_root",
     "discover_services",
+    "discover_manifest_services",
     "load_workspace",
     "filter_services",
 ]
