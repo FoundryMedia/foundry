@@ -236,6 +236,18 @@ class SelectableRichLog(RichLog):
         return strip
 
 
+class SidebarLabel(Label):
+    """Sidebar text is NOT selectable.
+
+    With the sidebar selectable, any drag whose anchor the terminal fails to
+    resolve fell back to the engine's whole-widget walk and lit up the
+    SIDEBAR — the exact opposite of selecting log text. With these opted
+    out, the log pane is the only selection target.
+    """
+
+    ALLOW_SELECT = False
+
+
 class ServicesFooter(Static):
     """Pre-0.63-style one-line key footer, rendered as a single Text.
 
@@ -471,15 +483,15 @@ class ServicesUI(App[None]):
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="sidebar"):
-                yield Label("Services", id="sidebar_title")
-                yield Label("↑/↓ Select • → to Interact", id="sidebar_hint")
+                yield SidebarLabel("Services", id="sidebar_title")
+                yield SidebarLabel("↑/↓ Select • → to Interact", id="sidebar_hint")
                 items = []
                 for svc in self._services:
                     safe_id = f"svc-{_sanitize_id(svc.name)}"
                     display_name = self._display_names.get(svc.name, svc.name)
                     row = Horizontal(
-                        Label("", id=f"icon-{safe_id}", classes="svc_icon"),
-                        Label(display_name, id=f"name-{safe_id}", classes="svc_name"),
+                        SidebarLabel("", id=f"icon-{safe_id}", classes="svc_icon"),
+                        SidebarLabel(display_name, id=f"name-{safe_id}", classes="svc_name"),
                         classes="svc_row"
                     )
                     items.append(ListItem(row, id=safe_id, name=svc.name))
@@ -741,15 +753,33 @@ class ServicesUI(App[None]):
                 return
 
     async def on_event(self, event: events.Event) -> None:
-        """Drop non-left-click mouse events and paste events before dispatch.
+        """Drop right/middle-click mouse events and paste events before dispatch.
 
         Right/middle-click in some terminals (e.g. VS Code) can trigger
         @click meta actions on the footer or paste clipboard text, which
         would inadvertently fire key-bound actions like restart.
+
+        Deliberately allows button 0 as well as 1: real terminal drivers can
+        report 0 where the test harness reports 1 — swallowing those killed
+        the events text selection depends on.
         """
         if isinstance(event, (events.MouseDown, events.MouseUp, events.Click)):
-            if event.button != 1:
-                return  # swallow the event entirely
+            if event.button not in (0, 1):
+                return  # swallow right/middle click entirely
+            if os.environ.get("FOUNDRY_TUI_DEBUG_MOUSE"):
+                try:
+                    w, off = self.screen.get_widget_and_offset_at(
+                        event.screen_x, event.screen_y
+                    )
+                    self._notify_selected(
+                        "DEBUG",
+                        f"mouse {type(event).__name__} btn={event.button} "
+                        f"screen=({event.screen_x},{event.screen_y}) "
+                        f"widget={type(w).__name__ if w else None} offset={off} "
+                        f"captured={self.mouse_captured!r}",
+                    )
+                except Exception as e:
+                    self._notify_selected("DEBUG", f"mouse diag failed: {e}")
         if isinstance(event, events.Paste):
             return  # swallow paste — no paste target in this TUI
         await super().on_event(event)
