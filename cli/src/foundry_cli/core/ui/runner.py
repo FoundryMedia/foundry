@@ -234,9 +234,17 @@ class SelectableRichLog(RichLog):
     def _publish_selection(self, end) -> None:
         from textual.geometry import Offset
 
-        # Include the character under the cursor (mirror the engine's +1).
+        # Sort FIRST, then extend the trailing side by one so the characters
+        # under BOTH the anchor and the cursor are included regardless of drag
+        # direction (a naive cursor+1 made backward drags exclusive on both
+        # ends — the last/first char of a line was unreachable).
+        a = self._sel_anchor
+        if (end.y, end.x) < (a.y, a.x):
+            first, last = end, a
+        else:
+            first, last = a, end
         self.screen.selections = {
-            self: Selection.from_offsets(self._sel_anchor, Offset(end.x + 1, end.y))
+            self: Selection(first, Offset(last.x + 1, last.y))
         }
         self.refresh()
 
@@ -284,15 +292,51 @@ class SelectableRichLog(RichLog):
                 local_start = max(0, start - scroll_x)
                 local_end = max(0, min(strip.cell_length, end - scroll_x))
                 if local_end > local_start:
-                    from rich.style import Style as _RichStyle
-
-                    # Justin's spec: "an inversion of the background" - reverse video.
-                    style = _RichStyle(reverse=True)
                     left, middle, right = strip.divide(
                         [local_start, local_end, strip.cell_length]
                     )
-                    strip = Strip.join([left, middle.apply_style(style), right])
+                    strip = Strip.join([left, self._highlight(middle), right])
         return strip
+
+    _HL_BLUE = (59, 142, 234)  # #3B8EEA
+    _HL_ALPHA = 0.45
+
+    def _highlight(self, piece: Strip) -> Strip:
+        """Selection paint.
+
+        Truecolor terminals: translucent blue blended per-cell over each
+        segment's real background (terminals have no opacity — the blend IS
+        the translucency). Anything less capable falls back to reverse
+        video so the selection stays usable.
+        """
+        from rich.color import Color as RichColor, ColorType, blend_rgb
+        from rich.color_triplet import ColorTriplet
+        from rich.segment import Segment
+        from rich.style import Style as _RichStyle
+
+        if self.app.console.color_system != "truecolor":
+            return piece.apply_style(_RichStyle(reverse=True))
+
+        try:
+            base_bg = self.background_colors[1].rich_color.get_truecolor()
+        except Exception:
+            base_bg = ColorTriplet(18, 18, 18)
+        blue = ColorTriplet(*self._HL_BLUE)
+
+        segments = []
+        for text, style, _ in piece:
+            bg = None
+            if style is not None and style.bgcolor is not None:
+                try:
+                    bg = style.bgcolor.get_truecolor()
+                except Exception:
+                    bg = None
+            blended = blend_rgb(bg or base_bg, blue, self._HL_ALPHA)
+            overlay = _RichStyle(
+                bgcolor=RichColor(blended.hex, ColorType.TRUECOLOR, triplet=blended)
+            )
+            segments.append(Segment(text, (style + overlay) if style else overlay))
+        return Strip(segments, piece.cell_length)
 
 
 class SidebarLabel(Label):
@@ -1004,8 +1048,9 @@ class ServicesUI(App[None]):
             return
         err = _copy_text_to_clipboard(selection)
         if err is None:
-            count = selection.count("\n") + 1
-            self._notify_selected("INFO", f"Copied selection ({count} lines) to clipboard")
+            if self._debug:
+                count = selection.count("\n") + 1
+                self._notify_selected("DEBUG", f"Copied selection ({count} lines) to clipboard")
             self.screen.clear_selection()
         else:
             self._notify_selected("ERROR", f"Clipboard copy failed: {err}")
