@@ -16,6 +16,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual import events
+from textual.selection import Selection
+from textual.strip import Strip
 from textual.theme import Theme
 from textual.widgets import Label, ListItem, ListView, RichLog, Static
 from rich.ansi import AnsiDecoder
@@ -180,6 +182,53 @@ FOUNDRY_THEME = Theme(
 )
 
 
+class SelectableRichLog(RichLog):
+    """RichLog with mouse text selection.
+
+    Upstream RichLog (Textual 8.2.8) has NO selection support — the compositor
+    anchors a selection on per-segment "offset" style meta, which only widgets
+    rendering Content/Text emit. The plain `Log` widget implements the pattern
+    (`apply_offsets` + `get_selection` + span styling); this ports it onto
+    RichLog's Strip pipeline so click+drag works in the log pane.
+    """
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        text = "\n".join(strip.text for strip in self.lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        scroll_x, scroll_y = self.scroll_offset
+        content_y = scroll_y + y
+        strip = self._render_line(
+            content_y, scroll_x, self.scrollable_content_region.width
+        )
+        strip = strip.apply_style(self.rich_style)
+        # Stamp content-space offsets so the compositor can anchor a mouse
+        # selection here (the strip is already cropped to start at scroll_x).
+        strip = strip.apply_offsets(scroll_x, content_y)
+
+        selection = self.text_selection
+        if selection is not None:
+            span = selection.get_span(content_y)
+            if span is not None:
+                start, end = span
+                if end == -1:
+                    end = scroll_x + strip.cell_length
+                # Selection span is in content coords; the strip is viewport-local.
+                local_start = max(0, start - scroll_x)
+                local_end = max(0, min(strip.cell_length, end - scroll_x))
+                if local_end > local_start:
+                    style = self.screen.get_component_rich_style("screen--selection")
+                    left, middle, right = strip.divide(
+                        [local_start, local_end, strip.cell_length]
+                    )
+                    strip = Strip.join([left, middle.apply_style(style), right])
+        return strip
+
+
 class ServicesFooter(Static):
     """Pre-0.63-style one-line key footer, rendered as a single Text.
 
@@ -195,6 +244,13 @@ class ServicesFooter(Static):
         background: #0178D4;
         color: #DDE6ED;
         text-style: bold;
+        /* The @click meta marks each entry as a "link"; the theme default
+           link-style is underline — the old footer had none. Hover colors
+           reproduce 0.56's footer--highlight. */
+        link-style: bold;
+        link-style-hover: bold;
+        link-color-hover: #FFFFFF;
+        link-background-hover: #0065BE;
     }
     """
 
@@ -421,7 +477,7 @@ class ServicesUI(App[None]):
                     )
                     items.append(ListItem(row, id=safe_id, name=svc.name))
                 yield ListView(*items, id="services")
-            yield RichLog(id="log", highlight=False, markup=False, wrap=True)
+            yield SelectableRichLog(id="log", highlight=False, markup=False, wrap=True)
         yield ServicesFooter()
 
 
@@ -439,10 +495,13 @@ class ServicesUI(App[None]):
             icon_lbl.update(frame)
             icon_lbl.styles.color = "#F5F536" if is_selected else "#3B8EEA"
         elif st == ServiceStatus.healthy:
-            icon_lbl.update(" ✔︎" if self._is_vscode else "[OK]")
+            # Plain U+2713/U+2717 — the U+FE0E variation-selector forms
+            # (✔︎/✘︎) render wider than they measure in some terminals
+            # (VS Code) and clip in the 5-cell icon column.
+            icon_lbl.update(" ✓" if self._is_vscode else "[OK]")
             icon_lbl.styles.color = "#23D18B"
         elif st == ServiceStatus.failed:
-            icon_lbl.update(" ✘︎" if self._is_vscode else "[X]")
+            icon_lbl.update(" ✗" if self._is_vscode else "[X]")
             icon_lbl.styles.color = "#F14C4C"
         else:
             icon_lbl.update("?")
