@@ -393,11 +393,14 @@ class ServicesUI(App[None]):
     ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
-        Binding("ctrl+c", "request_quit", "Quit", priority=True),
+        # Esc quits so Ctrl+C is free for the universal "copy selection".
+        Binding("escape", "request_quit", "Quit", priority=True, key_display="ESC"),
+        Binding("ctrl+c", "copy_selection", "Copy", priority=True),
 
-        # Navigation / focus
+        # Navigation / focus: pure arrow-key flow — → into the log, ← back to
+        # the sidebar (priority so it beats the log's own horizontal scroll).
         Binding("right", "interact", "Interact", show=False),
-        Binding("escape", "unfocus", "Exit", show=False),
+        Binding("left", "unfocus", "Back", show=False, priority=True),
 
         # Layout
         Binding("tab", "toggle_fullscreen", "Toggle Sidebar", priority=True),
@@ -405,8 +408,7 @@ class ServicesUI(App[None]):
         # Service control
         Binding("r", "restart", "Restart"),
 
-        # Log copy / export
-        Binding("c", "copy_log", "Copy Log"),
+        # Log export
         Binding("e", "export_log", "Export Log"),
 
         # Log scrolling (when log is focused)
@@ -543,7 +545,7 @@ class ServicesUI(App[None]):
             "",
             f"[#3B8EEA bold]                         v{version}[/]",
             "",
-            "[#888888]Select text: click+drag, then 'c' to copy  -  'c' alone copies the whole log  -  'e' exports it[/]",
+            "[#888888]Select text: click+drag, then Ctrl+C to copy  -  'e' exports the whole log[/]",
             "",
         ]
 
@@ -780,6 +782,22 @@ class ServicesUI(App[None]):
                     )
                 except Exception as e:
                     self._notify_selected("DEBUG", f"mouse diag failed: {e}")
+        elif (
+            isinstance(event, events.MouseMove)
+            and event.button
+            and os.environ.get("FOUNDRY_TUI_DEBUG_MOUSE")
+        ):
+            try:
+                w, off = self.screen.get_widget_and_offset_at(
+                    event.screen_x, event.screen_y
+                )
+                self._notify_selected(
+                    "DEBUG",
+                    f"drag btn={event.button} screen=({event.screen_x},{event.screen_y}) "
+                    f"widget={type(w).__name__ if w else None} offset={off}",
+                )
+            except Exception as e:
+                self._notify_selected("DEBUG", f"drag diag failed: {e}")
         if isinstance(event, events.Paste):
             return  # swallow paste — no paste target in this TUI
         await super().on_event(event)
@@ -819,7 +837,7 @@ class ServicesUI(App[None]):
         self.query_one("#log", RichLog).focus()
 
         try:
-            self.query_one("#sidebar_hint", Label).update("[Esc] to Change Service")
+            self.query_one("#sidebar_hint", Label).update("← to Change Service")
         except NoMatches:
             pass
 
@@ -909,29 +927,23 @@ class ServicesUI(App[None]):
                 self.call_later(self.run_action, binding.action)
                 return
 
-    def action_copy_log(self) -> None:
-        """Copy mouse-selected text, else the selected service's full log ('c')."""
+    def action_copy_selection(self) -> None:
+        """Copy the mouse-selected text to the clipboard (Ctrl+C)."""
         selection = None
         try:
             selection = self.screen.get_selected_text()
         except Exception:
             pass
-        if selection:
-            err = _copy_text_to_clipboard(selection)
-            if err is None:
-                count = selection.count("\n") + 1
-                self._notify_selected("INFO", f"Copied selection ({count} lines) to clipboard")
-                self.screen.clear_selection()
-            else:
-                self._notify_selected("ERROR", f"Clipboard copy failed: {err}")
+        if not selection:
+            self._notify_selected(
+                "INFO", "Nothing selected — click+drag in the log, then Ctrl+C"
+            )
             return
-        text = self._selected_log_text()
-        if text is None:
-            return
-        err = _copy_text_to_clipboard(text + "\n")
+        err = _copy_text_to_clipboard(selection)
         if err is None:
-            count = text.count("\n") + 1
-            self._notify_selected("INFO", f"Copied {count} log lines to clipboard")
+            count = selection.count("\n") + 1
+            self._notify_selected("INFO", f"Copied selection ({count} lines) to clipboard")
+            self.screen.clear_selection()
         else:
             self._notify_selected("ERROR", f"Clipboard copy failed: {err}")
 
