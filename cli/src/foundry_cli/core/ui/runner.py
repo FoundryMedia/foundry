@@ -6,7 +6,6 @@ import os
 import re
 import subprocess
 import sys
-from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -17,7 +16,8 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual import events
-from textual.widgets import Footer, Label, ListItem, ListView, RichLog
+from textual.theme import Theme
+from textual.widgets import Label, ListItem, ListView, RichLog, Static
 from rich.ansi import AnsiDecoder
 from rich.markup import escape
 from rich.text import Text
@@ -100,9 +100,8 @@ def _copy_text_to_clipboard(text: str) -> str | None:
     """Copy text to the system clipboard. Returns an error message, or None on success.
 
     Tries pyperclip if installed, then the platform's native clipboard command.
-    Textual enables terminal mouse tracking, which eats drag-selection in most
-    terminals — this keybind-driven copy is the reliable path (Shift+drag is the
-    terminal-level bypass for ad-hoc selection).
+    Used instead of Textual's OSC-52 `copy_to_clipboard` because terminal
+    support for OSC-52 is spotty (notably older Windows terminals).
     """
     try:
         import pyperclip  # type: ignore
@@ -163,62 +162,55 @@ class ServiceRunnerState:
     status_task: asyncio.Task[None]
 
 
-class ServicesFooter(Footer):
-    def _make_key_text(self) -> Text:
-        base_style = self.rich_style
-        text = Text(
-            style=self.rich_style,
-            no_wrap=True,
-            overflow="ellipsis",
-            justify="left",
-            end="",
-        )
-        highlight_style = self.get_component_rich_style("footer--highlight")
-        highlight_key_style = self.get_component_rich_style("footer--highlight-key")
-        key_style = self.get_component_rich_style("footer--key")
-        description_style = self.get_component_rich_style("footer--description")
+# The exact palette Textual 0.56.4's default dark design generated — the look
+# this TUI shipped with. Registered as an explicit theme so the Textual 8.x
+# upgrade (done for built-in mouse text selection) changes ZERO colors.
+_LEGACY_FOOTER_BG = "#0178D4"       # 0.56 $accent (old Footer background)
+_LEGACY_FOOTER_KEY_BG = "#0053AA"   # 0.56 $accent-darken-2 (footer--key)
+FOUNDRY_THEME = Theme(
+    name="foundry",
+    primary=_LEGACY_FOOTER_BG,      # drives block-cursor (ListView highlight) = old $accent
+    secondary="#004578",
+    accent=_LEGACY_FOOTER_BG,       # keep 8.x's orange accent out of scrollbars/focus tints
+    background="#121212",
+    surface="#1E1E1E",
+    panel="#24292F",
+    boost="#FFFFFF0A",
+    dark=True,
+)
 
-        bindings = [
-            binding
-            for (_, binding) in self.app.namespace_bindings.values()
-            if binding.show
-        ]
 
-        action_to_bindings = defaultdict(list)
-        for binding in bindings:
-            action_to_bindings[binding.action].append(binding)
+class ServicesFooter(Static):
+    """Pre-0.63-style one-line key footer, rendered as a single Text.
 
-        preferred_actions = ["request_quit", "toggle_fullscreen"]
-        ordered_actions = [
-            *[action for action in preferred_actions if action in action_to_bindings],
-            *[
-                action
-                for action in action_to_bindings.keys()
-                if action not in preferred_actions
-            ],
-        ]
+    Textual >=0.63 rewrote Footer into composed FooterKey widgets with a
+    different look; this keeps the original bar (keys bold on darker blue,
+    descriptions on the accent bar) byte-identical through the 8.x upgrade.
+    """
 
-        for action in ordered_actions:
-            binding = action_to_bindings[action][0]
-            if binding.key_display is None:
-                key_display = self.app.get_key_display(binding.key)
-                if key_display is None:
-                    key_display = binding.key.upper()
-            else:
-                key_display = binding.key_display
-            hovered = self.highlight_key == binding.key
-            key_text = Text.assemble(
-                (f" {key_display} ", highlight_key_style if hovered else key_style),
-                (
-                    f" {binding.description} ",
-                    highlight_style if hovered else base_style + description_style,
-                ),
-                meta={
-                    "@click": f"app.check_bindings('{binding.key}')",
-                    "key": binding.key,
-                },
+    DEFAULT_CSS = """
+    ServicesFooter {
+        dock: bottom;
+        height: 1;
+        background: #0178D4;
+        color: #DDE6ED;
+        text-style: bold;
+    }
+    """
+
+    def render(self) -> Text:
+        text = Text(no_wrap=True, overflow="ellipsis", justify="left", end="")
+        for binding in self.app.BINDINGS:
+            if not isinstance(binding, Binding) or not binding.show:
+                continue
+            key_display = binding.key_display or binding.key.upper()
+            text.append_text(
+                Text.assemble(
+                    (f" {key_display} ", f"bold #FFFFFF on {_LEGACY_FOOTER_KEY_BG}"),
+                    (f" {binding.description} ", f"bold #DDE6ED on {_LEGACY_FOOTER_BG}"),
+                    meta={"@click": f"app.footer_press('{binding.key}')"},
+                )
             )
-            text.append_text(key_text)
         return text
 
 
@@ -274,8 +266,9 @@ class ServicesUI(App[None]):
         height: 1fr;
     }
 
-    /* Reduce "cursor" artifacts: keep list highlight on the row, not on sub-widgets. */
-    #services:focus .listview--highlight {
+    /* Reduce "cursor" artifacts: keep list highlight on the row, not on sub-widgets.
+       (Textual >=0.63 renamed the highlight class to ListItem.-highlight.) */
+    #services > ListItem.-highlight {
         text-style: none;
     }
 
@@ -319,11 +312,10 @@ class ServicesUI(App[None]):
         scrollbar-size-horizontal: 0;
     }
 
-    Footer {
-        text-style: bold;
-        content-align: center middle;
-    }
     """
+
+    # 0.56 had no command palette; keep ctrl+p free of surprise UI.
+    ENABLE_COMMAND_PALETTE = False
 
     BINDINGS = [
         Binding("ctrl+c", "request_quit", "Quit", priority=True),
@@ -361,6 +353,10 @@ class ServicesUI(App[None]):
         debug: bool = False,
     ) -> None:
         super().__init__()
+        # Pin the exact 0.56-era palette (see FOUNDRY_THEME) — the Textual 8.x
+        # default themes would silently recolor the whole UI.
+        self.register_theme(FOUNDRY_THEME)
+        self.theme = "foundry"
         self._services = services
         self._provided_runners = runners
         self._debug = debug
@@ -469,7 +465,7 @@ class ServicesUI(App[None]):
             "",
             f"[#3B8EEA bold]                         v{version}[/]",
             "",
-            "[#888888]Select text: Shift+drag  -  'c' copy log  -  'e' export log[/]",
+            "[#888888]Select text: click+drag, then 'c' to copy  -  'c' alone copies the whole log  -  'e' exports it[/]",
             "",
         ]
 
@@ -798,8 +794,29 @@ class ServicesUI(App[None]):
         except NoMatches:
             pass
 
+    def action_footer_press(self, key: str) -> None:
+        """Run the action bound to `key` (footer @click)."""
+        for binding in self.BINDINGS:
+            if isinstance(binding, Binding) and binding.key == key:
+                self.call_later(self.run_action, binding.action)
+                return
+
     def action_copy_log(self) -> None:
-        """Copy the selected service's full log to the system clipboard ('c')."""
+        """Copy mouse-selected text, else the selected service's full log ('c')."""
+        selection = None
+        try:
+            selection = self.screen.get_selected_text()
+        except Exception:
+            pass
+        if selection:
+            err = _copy_text_to_clipboard(selection)
+            if err is None:
+                count = selection.count("\n") + 1
+                self._notify_selected("INFO", f"Copied selection ({count} lines) to clipboard")
+                self.screen.clear_selection()
+            else:
+                self._notify_selected("ERROR", f"Clipboard copy failed: {err}")
+            return
         text = self._selected_log_text()
         if text is None:
             return
