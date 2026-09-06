@@ -190,7 +190,18 @@ FOUNDRY_THEME = Theme(
 
 
 class SelectableRichLog(RichLog):
-    """RichLog with mouse text selection.
+    """RichLog with SELF-CONTAINED mouse text selection.
+
+    Textual's engine-level selection anchors on per-segment offset meta that
+    proved unreliable in real terminals (VS Code drags fell into the
+    whole-widget fallback: no visible highlight, Ctrl+C copied the whole
+    pane). So this widget owns the whole gesture itself with plain mouse
+    events - the same events that drive clicks and hover, which work
+    everywhere: MouseDown anchors (and captures the mouse), MouseMove
+    extends, MouseUp releases; a plain click clears. The selection is
+    published into screen.selections, so Screen.get_selected_text /
+    clear_selection and Ctrl+C copy keep working unchanged. Highlight is
+    reverse video - an inversion of whatever is underneath.
 
     Upstream RichLog (Textual 8.2.8) has NO selection support — the compositor
     anchors a selection on per-segment "offset" style meta, which only widgets
@@ -206,6 +217,54 @@ class SelectableRichLog(RichLog):
     def selection_updated(self, selection: Selection | None) -> None:
         self.refresh()
 
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._sel_anchor = None  # content-space Offset of mouse-down
+        self._sel_dragging = False
+
+    def _content_offset_at(self, event):
+        from textual.geometry import Offset
+
+        gutter = self.gutter
+        x = max(0, event.x - gutter.left) + self.scroll_offset.x
+        y = max(0, event.y - gutter.top) + self.scroll_offset.y
+        y = min(y, len(self.lines) - 1) if self.lines else 0
+        return Offset(x, y)
+
+    def _publish_selection(self, end) -> None:
+        from textual.geometry import Offset
+
+        # Include the character under the cursor (mirror the engine's +1).
+        self.screen.selections = {
+            self: Selection.from_offsets(self._sel_anchor, Offset(end.x + 1, end.y))
+        }
+        self.refresh()
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button not in (0, 1):
+            return
+        self._sel_anchor = self._content_offset_at(event)
+        self._sel_dragging = False
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._sel_anchor is None:
+            return
+        end = self._content_offset_at(event)
+        if not self._sel_dragging and end != self._sel_anchor:
+            self._sel_dragging = True
+        if self._sel_dragging:
+            self._publish_selection(end)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self.release_mouse()
+        was_click = self._sel_anchor is not None and not self._sel_dragging
+        self._sel_anchor = None
+        self._sel_dragging = False
+        if was_click and self.screen.selections:
+            self.screen.clear_selection()
+            self.refresh()
+
     def render_line(self, y: int) -> Strip:
         scroll_x, scroll_y = self.scroll_offset
         content_y = scroll_y + y
@@ -213,9 +272,6 @@ class SelectableRichLog(RichLog):
             content_y, scroll_x, self.scrollable_content_region.width
         )
         strip = strip.apply_style(self.rich_style)
-        # Stamp content-space offsets so the compositor can anchor a mouse
-        # selection here (the strip is already cropped to start at scroll_x).
-        strip = strip.apply_offsets(scroll_x, content_y)
 
         selection = self.text_selection
         if selection is not None:
@@ -228,7 +284,10 @@ class SelectableRichLog(RichLog):
                 local_start = max(0, start - scroll_x)
                 local_end = max(0, min(strip.cell_length, end - scroll_x))
                 if local_end > local_start:
-                    style = self.screen.get_component_rich_style("screen--selection")
+                    from rich.style import Style as _RichStyle
+
+                    # Justin's spec: "an inversion of the background" - reverse video.
+                    style = _RichStyle(reverse=True)
                     left, middle, right = strip.divide(
                         [local_start, local_end, strip.cell_length]
                     )
@@ -391,6 +450,10 @@ class ServicesUI(App[None]):
 
     # 0.56 had no command palette; keep ctrl+p free of surprise UI.
     ENABLE_COMMAND_PALETTE = False
+
+    # Engine-level text selection OFF: its terminal-dependent anchoring was
+    # unreliable (whole-widget fallback). SelectableRichLog owns selection.
+    ALLOW_SELECT = False
 
     BINDINGS = [
         # Esc quits so Ctrl+C is free for the universal "copy selection".
