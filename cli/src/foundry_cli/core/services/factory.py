@@ -35,15 +35,23 @@ def create_runner(
     migrate_db: bool = False,
     workspace_root: Path | None = None,
 ):
+    # Resolve the workspace/repo root once, up front (prefer the caller-provided
+    # one; fall back to walking up from the service for its owning manifest).
+    resolved_root = workspace_root
+    if resolved_root is None:
+        from foundry_cli.core.project.workspace import service_repo_root
+
+        resolved_root = service_repo_root(service.path)
+
     injected_env_keys: tuple[str, ...] = ()
     dev_mode: str | None = None
-    if command == "dev" and workspace_root is not None:
+    if command == "dev" and resolved_root is not None:
         # Resolve the service's dev target (prod-tunnel vs full-local) from its
         # env stack BEFORE constructing runners — the tunnel and injected
         # credentials depend on it. See core/project/dev_env.py.
         from foundry_cli.core.project.dev_env import prepare_service_for_dev
 
-        service, dev_mode, injected_env_keys = prepare_service_for_dev(service, workspace_root)
+        service, dev_mode, injected_env_keys = prepare_service_for_dev(service, resolved_root)
 
     rt = service.runtime.runtime
     cfg = service.config
@@ -99,17 +107,6 @@ def create_runner(
     else:
         runner = _UnsupportedServiceRunner(service, command=command)
     
-    # Resolve the workspace root once (prefer the caller-provided one; fall
-    # back to walking up for a manifest — .foundry/foundry.json or foundry.json).
-    resolved_root = workspace_root
-    if resolved_root is None:
-        probe = service.path
-        while probe.parent != probe:
-            if (probe / ".foundry" / "foundry.json").exists() or (probe / "foundry.json").exists():
-                resolved_root = probe
-                break
-            probe = probe.parent
-
     # Wrap with migration support if --migrate-db and database config exists
     if migrate_db and cfg.database_config:
         from foundry_cli.core.project.manifest import DatabaseConfig as DC

@@ -184,8 +184,18 @@ def resolve_workspace(
     for svc_name, svc_cfg in manifest.services_config.items():
         kind = svc_cfg.kind or "backend"
 
-        # Resolve filesystem path
-        svc_dir = _resolve_service_dir(kind, svc_name, project_root, apps_dir, packages_dir)
+        # A manifest-declared path (the multi-repo v0.7.0 shape:
+        # ``services.<name>.path``) wins over the conventional apps/ scan —
+        # without this, multi-repo repos report every service as "missing".
+        svc_dir = None
+        if svc_cfg.path:
+            declared = project_root / svc_cfg.path
+            if declared.is_dir():
+                svc_dir = declared
+
+        # Fall back to the conventional-layout resolution
+        if svc_dir is None:
+            svc_dir = _resolve_service_dir(kind, svc_name, project_root, apps_dir, packages_dir)
 
         if svc_dir is not None and svc_dir.is_dir():
             rel_path = _relative_posix(svc_dir, project_root)
