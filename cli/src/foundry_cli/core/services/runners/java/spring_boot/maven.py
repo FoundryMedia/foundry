@@ -7,13 +7,14 @@ from pathlib import Path
 from typing import Literal
 
 from foundry_cli.core.project.manifest import DebugConfig
-from foundry_cli.core.services.health import HealthCheckConfig, wait_for_http_healthy
+from foundry_cli.core.services.health import probe_health_snapshot
 from foundry_cli.core.services.runners.base import ServiceStatus, ServiceStatusEvent
 from foundry_cli.core.services.runners.process import ProcessBackedRunner
 
 
 DependencyManager = Literal["maven", "gradle"]
-STARTUP_TIMEOUT_S = 60.0
+# Cold start = maven compile + (prod target) SSH tunnel + remote-RDS pool init.
+STARTUP_TIMEOUT_S = 120.0
 
 
 def _find_mvnw(service_dir: Path) -> Path | None:
@@ -149,6 +150,9 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                 cmd.append(f"-Dspring-boot.run.arguments={' '.join(app_args)}")
 
         run_env = {**os.environ, **self._env}
+        # Spring disables ANSI on a piped (non-TTY) stdout; the TUI log pane
+        # decodes ANSI, so force color back on. Explicit manifest env wins.
+        run_env.setdefault("SPRING_OUTPUT_ANSI_ENABLED", "ALWAYS")
         if "JAVA_HOME" not in run_env:
             # mvnw hard-requires JAVA_HOME; derive it from `java` on PATH so a
             # shell without the variable still runs.
@@ -218,59 +222,77 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                 await asyncio.sleep(0.35)
                 continue
 
-            # Probe actuator port first (if configured), then fall back to app port.
+            # Probe only ports that are actually OPEN — retrying a closed
+            # actuator port used to burn 30s of the startup budget on
+            # connection-refused loops before the app port was ever tried.
             candidate_ports: list[int] = []
             if self._strict_health_ports:
                 candidate_ports = [actuator_port or port]
             else:
-                if actuator_port is not None:
+                if actuator_port is not None and actuator_open:
                     candidate_ports.append(actuator_port)
                 if port is not None and port not in candidate_ports:
                     candidate_ports.append(port)
 
-            for probe_port in candidate_ports:
-                for url, require_up in (
-                    (f"http://{host}:{probe_port}/actuator/health", True),
-                    (f"http://{host}:{probe_port}/health", True),
-                    (f"http://{host}:{probe_port}/", False),
+            async def _mark_healthy(detail: str, level: str = "INFO") -> None:
+                if (
+                    actuator_port is not None
+                    and actuator_port != port
+                    and not actuator_open
                 ):
-                    try:
-                        await wait_for_http_healthy(
-                            HealthCheckConfig(
-                                url=url, timeout_s=5.0, interval_s=1.0,
-                                startup_timeout_s=10.0, require_up_status=require_up,
-                            )
-                        )
-                    except Exception:
-                        continue
-
-                    if proc.returncode is not None:
-                        return  # Process died during check
-
-                    if (
-                        actuator_port is not None
-                        and actuator_port != port
-                        and probe_port == port
-                        and not actuator_open
-                    ):
-                        await self._status_queue.put(
-                            ServiceStatusEvent(
-                                self.name,
-                                ServiceStatus.starting,
-                                detail=(
-                                    f"Configured actuator port {actuator_port} not reachable; "
-                                    f"using app port {port} for health."
-                                ),
-                                level="WARN",
-                            )
-                        )
-
                     await self._status_queue.put(
                         ServiceStatusEvent(
-                            self.name, ServiceStatus.healthy,
-                            detail=f"Healthy: {url}",
-                            level="INFO",
+                            self.name,
+                            ServiceStatus.starting,
+                            detail=(
+                                f"Configured actuator port {actuator_port} not reachable; "
+                                f"using app port {port} for health."
+                            ),
+                            level="WARN",
                         )
+                    )
+                await self._status_queue.put(
+                    ServiceStatusEvent(
+                        self.name, ServiceStatus.healthy, detail=detail, level=level,
+                    )
+                )
+
+            for probe_port in candidate_ports:
+                # Health endpoints: any parsed health body means the app is up.
+                # UP = healthy; DOWN = degraded-but-running (a dev loop with no
+                # local OpenFGA/etc. reads DOWN forever — that's still "started",
+                # and the detail names what's down instead of hiding it).
+                for path in ("/actuator/health", "/health"):
+                    url = f"http://{host}:{probe_port}{path}"
+                    try:
+                        snap = await probe_health_snapshot(url)
+                    except Exception:
+                        continue
+                    if proc.returncode is not None:
+                        return  # Process died during check
+                    if snap.status is None:
+                        continue  # Not a health endpoint (404 page etc.)
+                    if snap.status == "UP":
+                        await _mark_healthy(f"Healthy: {url}")
+                    else:
+                        down = f" (down: {', '.join(snap.down_components)})" if snap.down_components else ""
+                        await _mark_healthy(
+                            f"Running on :{port} — health {snap.status}{down}",
+                            level="WARN",
+                        )
+                    return
+
+                # Last resort: ANY HTTP response below 500 proves the server is
+                # up (a secured app answers 401/404 here — that's alive).
+                try:
+                    snap = await probe_health_snapshot(f"http://{host}:{probe_port}/")
+                except Exception:
+                    continue
+                if proc.returncode is not None:
+                    return
+                if snap.http_status < 500:
+                    await _mark_healthy(
+                        f"Running on :{probe_port} (HTTP {snap.http_status}; no health endpoint)"
                     )
                     return
 
