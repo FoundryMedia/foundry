@@ -123,8 +123,14 @@ class SidecarRunner(ProcessBackedRunner):
         try:
             proc = await asyncio.create_subprocess_exec(
                 "docker", "rm", "-f", ref,
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                **(
+                    {"creationflags": subprocess.CREATE_NO_WINDOW}
+                    if sys.platform == "win32"
+                    else {}
+                ),
             )
             await asyncio.wait_for(proc.wait(), timeout=10.0)
         except Exception:

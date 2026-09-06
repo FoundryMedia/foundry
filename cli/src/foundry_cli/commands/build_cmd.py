@@ -22,34 +22,19 @@ import click
 
 from foundry_cli.core import auth, fid
 from foundry_cli.core.errors import FoundryError
+from foundry_cli.core.project import project_game_id
 
 # Map a --type to the FCM engine specifier default (server/client are the two build faces).
 _ENGINE_BY_TYPE = {"client": "unreal", "server": "unreal"}
 
 
 def _project_game_id() -> str | None:
-    """The gameId from .foundry/config.yml, walking up from CWD (game-publisher projects only).
+    """The gameId from .foundry/config.yml (game-publisher projects). See core.project.project_game_id.
 
     Lets `foundry fcm push` link the uploaded build to the project's game without an explicit
-    --game — a push from inside a game project is unambiguous. Any read/parse problem just means
-    "no default" (the push must never fail on config sniffing).
+    --game — a push from inside a game project is unambiguous. Shared with `foundry fmms queue`.
     """
-    cwd = Path.cwd()
-    for root in (cwd, *cwd.parents):
-        for filename in ("config.yml", "config.yaml"):
-            cfg_path = root / ".foundry" / filename
-            if cfg_path.is_file():
-                try:
-                    import yaml
-
-                    cfg = yaml.safe_load(cfg_path.read_text(encoding="utf-8")) or {}
-                except Exception:
-                    return None
-                if cfg.get("kind") != "game-publisher":
-                    return None
-                game_id = cfg.get("gameId")
-                return str(game_id).strip().lower() if game_id else None
-    return None
+    return project_game_id()
 
 
 def upload_build(
@@ -187,6 +172,355 @@ def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image
         name=name,
         game=game,
     )
+
+
+# ---------------------------------------------------------------------------
+# `foundry fcm publish` — BYO: assemble + SIGN the manifest locally, then upload
+# ---------------------------------------------------------------------------
+
+def _load_publisher_config() -> dict:
+    """Read the game-publisher .foundry/config.yml (publisher, gameId, build.*). Raises if absent."""
+    import yaml  # lazy: only the publish path needs it
+    from pathlib import Path
+
+    d = Path.cwd()
+    for base in [d, *d.parents]:
+        for name in ("config.yml", "config.yaml"):
+            p = base / ".foundry" / name
+            if p.exists():
+                cfg = yaml.safe_load(p.read_text("utf-8")) or {}
+                if cfg.get("kind") == "game-publisher":
+                    return cfg
+    raise click.ClickException(
+        "No .foundry/config.yml (kind: game-publisher) found. Run this inside a game project.")
+
+
+@fcm.command(name="publish")
+@click.argument("staged_dir", metavar="STAGED_DIR",
+                type=click.Path(exists=True, file_okay=False, resolve_path=True))
+@click.option("--version", required=True, help="Release version, e.g. 1.0.0.")
+@click.option("--prerelease", is_flag=True,
+              help="Publish to the private test channel (snapshot); stable is untouched.")
+@click.option("--channel", default="stable", show_default=True,
+              help="Channel this release activates (ignored with --prerelease).")
+@click.option("--min-launcher", "min_launcher", default="0.9.0", show_default=True,
+              help="Minimum launcher version required to install this release.")
+@click.option("--managed", is_flag=True,
+              help="Managed signing: fid signs the manifest via your KMS key (no local key needed). "
+                   "Default is BYO (sign locally).")
+def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed) -> None:
+    """Publish a client release.
+
+    STAGED_DIR is the cooked client tree (e.g. Saved/StagedBuilds/Windows from
+    `foundry package --client`). The build files upload straight to storage. BYO
+    (default): the signed manifest is produced HERE — Foundry never holds your key.
+    --managed: fid signs the index via your per-publisher KMS key (the private key
+    stays in the HSM). Stage with --prerelease, then flip the channel in the console
+    or with `foundry fcm channel set`.
+    """
+    from pathlib import Path
+
+    from foundry_cli.core import minisign, fcm_manifest as fm
+
+    cfg = _load_publisher_config()
+    slug = (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+    title = cfg.get("title") or slug
+    exe = (cfg.get("build") or {}).get("executableRelpath")
+    if not slug or not publisher:
+        raise click.ClickException(".foundry/config.yml needs both `publisher` and `gameId`.")
+
+    key = None
+    if not managed:
+        key = minisign.load()
+        if not key:
+            raise click.ClickException(
+                "No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+        _guard_byo_signer(publisher, slug, key)
+
+    token = auth.access_token()
+
+    # 1. content-address the staged build + assemble the immutable release doc
+    click.echo(f"Hashing {Path(staged_dir).name}…")
+    files, total = fm.content_address(Path(staged_dir), exe)
+    doc = fm.release_doc(slug, version, files, total)
+    doc_bytes = fm.serialize(doc)
+    doc_sha = fm.sha256_bytes(doc_bytes)
+    click.echo(f"  {len(files)} files, {total / 1e6:.1f} MB")
+
+    # 2. BYO only: accumulate into the current signed root + SIGN it locally. (Managed: fid
+    #    assembles + signs the index server-side from the uploaded release doc.)
+    root_bytes = sig_text = None
+    if not managed:
+        existing = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+        if existing:
+            try:
+                fm.assert_coherent(existing)
+            except ValueError as e:
+                raise click.ClickException(str(e))
+        root = fm.merge_release(
+            existing, game_id=slug, publisher=publisher, title=title, version=version,
+            doc_sha256=doc_sha, total_size=total, min_launcher_version=min_launcher,
+            mandatory=False, channel=("snapshot" if prerelease else channel),
+        )
+        root_bytes = fm.serialize(root)
+        sig_text = minisign.sign_bytes(
+            root_bytes, key, f"signature for {publisher}/{slug} index",
+            f"{publisher}/{slug}@{version}")
+        click.echo(click.style(f"✓ Signed index.json locally with key {key['keyId']}", fg="green"))
+
+    # 3. ask fid which content-addressed files are new (dedup) + get presigned PUT URLs
+    prep = fid.api_request(
+        f"/v1/fcm/games/{slug}/publish/prepare", method="POST", token=token,
+        body={"version": version, "prerelease": prerelease,
+              "files": [{"sha256": f["sha256"], "size": f["size"]} for f in files]})
+    uploads = (prep or {}).get("uploads") or {}
+
+    # 4. upload straight to storage (direct presigned PUTs — bytes never touch fid).
+    #    Content types MUST mirror fid's PublishService presigns (signed into the URLs).
+    by_sha = {f["sha256"]: f for f in files}
+    new_files = [s for s in by_sha if s in uploads]
+    click.echo(f"Uploading {len(new_files)} new files ({len(files) - len(new_files)} reused)…")
+    for sha in new_files:
+        fid.put_file(uploads[sha], str(Path(staged_dir) / by_sha[sha]["path"].replace("/", os.sep)),
+                     content_type="application/octet-stream")
+    _put_bytes(uploads["releaseDoc"], doc_bytes, "application/json")
+    if not managed:
+        # Managed: fid writes index.json + .minisig (KMS-signed) at complete; don't upload ours.
+        _put_bytes(uploads["index"], root_bytes, "application/json")
+        _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
+
+    # 5. finalize — BYO: fid verifies the CLI-signed objects. Managed: fid assembles + KMS-signs.
+    fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
+                    body={"version": version, "prerelease": prerelease,
+                          "channel": ("snapshot" if prerelease else channel),
+                          "minLauncher": min_launcher})
+    signed = "fid (managed KMS)" if managed else f"key {key['keyId']} (BYO)"
+    where = ("added (prerelease) - live on the private test channel (snapshot)"
+             if prerelease else f"live on {channel}")
+    click.echo(click.style(f"✓ Published {slug} {version} — {where}. Signed by {signed}.",
+                           fg="green", bold=True))
+
+
+@fcm.command(name="releases")
+def fcm_releases() -> None:
+    """List published releases + channel pointers (read from the signed index)."""
+    from foundry_cli.core import fcm_manifest as fm
+
+    cfg = _load_publisher_config()
+    slug = (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not index:
+        raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    channels = index.get("channels") or {}
+    releases = index.get("releases") or {}
+    by_version = sorted(releases.items(), key=lambda e: e[1].get("publishedAt") or "", reverse=True)
+    for version, meta in by_version:
+        pointing = sorted(ch for ch, v in channels.items() if v == version)
+        badge = f"  [{', '.join(pointing)}]" if pointing else ""
+        size = meta.get("totalSize")
+        size_s = f"{size / 1e6:,.1f} MB" if isinstance(size, (int, float)) else "?"
+        click.echo(f"{version:<14} {meta.get('publishedAt', '?'):<28} {size_s:>12}{badge}")
+
+
+@fcm.group()
+def channel() -> None:
+    """Distribution channel pointers (the signed index's channels map)."""
+
+
+@channel.command(name="set")
+@click.argument("channel_name", metavar="CHANNEL")
+@click.argument("version")
+@click.option("--managed", is_flag=True,
+              help="Managed: fid re-signs the index via your KMS key. Default is BYO (re-sign locally).")
+def channel_set(channel_name, version, managed) -> None:
+    """Point CHANNEL (e.g. stable) at an already-published VERSION.
+
+    The pointer lives INSIDE the signed index.json. BYO (default): re-sign the index
+    on THIS machine + upload it. --managed: fid re-signs via your KMS key (the console
+    "Change" button does the same). Rollback = point back at an older version.
+    """
+    from foundry_cli.core import minisign, fcm_manifest as fm
+
+    cfg = _load_publisher_config()
+    slug = (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+    ch = channel_name.strip().lower()
+    token = auth.access_token()
+
+    if managed:
+        # fid validates the version is published, re-assembles + KMS-signs the index.
+        fid.api_request(f"/v1/fcm/games/{slug}/publish/channel", method="POST", token=token,
+                        body={"channel": ch, "version": version})
+        click.echo(click.style(
+            f"✓ {slug} {ch} -> {version} (managed, fid-signed) — live for launchers now.",
+            fg="green", bold=True))
+        return
+
+    key = minisign.load()
+    if not key:
+        raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+    _guard_byo_signer(publisher, slug, key)
+
+    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not index:
+        raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    try:
+        fm.assert_coherent(index)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    releases = index.get("releases") or {}
+    if version not in releases:
+        raise click.ClickException(
+            f"{version} is not a published release. Published: {', '.join(sorted(releases)) or '(none)'}")
+    prev = (index.get("channels") or {}).get(ch)
+    index.setdefault("channels", {})[ch] = version
+
+    root_bytes = fm.serialize(index)
+    sig_text = minisign.sign_bytes(
+        root_bytes, key, f"signature for {publisher}/{slug} index",
+        f"{publisher}/{slug}@{version}")
+    click.echo(click.style(f"✓ Re-signed index.json locally with key {key['keyId']}", fg="green"))
+
+    # prepare/complete with files=[] — only the re-signed manifest objects move. complete()
+    # also stamps the game's currentVersion; for a stable flip that is exactly right.
+    prep = fid.api_request(
+        f"/v1/fcm/games/{slug}/publish/prepare", method="POST", token=token,
+        body={"version": version, "prerelease": False, "files": []})
+    uploads = (prep or {}).get("uploads") or {}
+    _put_bytes(uploads["index"], root_bytes, "application/json")
+    _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
+    fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
+                    body={"version": version, "prerelease": False, "channel": ch})
+    click.echo(click.style(
+        f"✓ {slug} {ch}: {prev or '(unset)'} -> {version} — live for launchers now.",
+        fg="green", bold=True))
+
+
+@channel.command(name="unset")
+@click.argument("channel_name", metavar="CHANNEL")
+@click.option("--game", default=None, help="Game slug (else the project's .foundry gameId).")
+@click.option("--managed", is_flag=True,
+              help="Managed: fid removes the pointer + re-signs the index via your KMS key. "
+                   "Default is BYO (re-sign locally, then sync fid).")
+def channel_unset(channel_name, game, managed) -> None:
+    """Remove CHANNEL's pointer — unsetting stable delists the game publicly; snapshot stays the private test channel.
+
+    The pointer lives INSIDE the signed index.json. BYO (default): remove it, re-sign
+    the index on THIS machine + upload it, then call fid so its channel state syncs
+    (fid verifies the manifest no longer carries the channel). --managed: fid does the
+    signed removal server-side. Re-point later with `foundry fcm channel set`.
+    """
+    ch = channel_name.strip().lower()
+    slug = (game or "").strip().lower() or None
+    token = auth.access_token()
+
+    if managed:
+        # fid removes the pointer + re-signs the index via the publisher's KMS key server-side.
+        if not slug:
+            cfg = _load_publisher_config()
+            slug = (cfg.get("gameId") or "").strip().lower()
+        resp = fid.api_request(f"/v1/fcm/games/{slug}/channels/{ch}", method="DELETE", token=token)
+        _echo_channel_removed(slug, ch, resp)
+        return
+
+    from foundry_cli.core import minisign, fcm_manifest as fm
+
+    cfg = _load_publisher_config()
+    slug = slug or (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
+
+    key = minisign.load()
+    if not key:
+        raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
+    _guard_byo_signer(publisher, slug, key)
+
+    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not index:
+        raise click.ClickException(f"No published index found for {publisher}/{slug}.")
+    try:
+        fm.assert_coherent(index)
+    except ValueError as e:
+        raise click.ClickException(str(e))
+    channels = index.get("channels") or {}
+    if ch not in channels:
+        # Refuse a no-op: nothing to remove, so never upload/re-sign anything.
+        raise click.ClickException(f"Channel '{ch}' is not set.")
+    prev = channels[ch]
+    del index["channels"][ch]
+    from datetime import datetime, timezone
+    index["updatedAt"] = datetime.now(timezone.utc).isoformat()
+
+    root_bytes = fm.serialize(index)
+    sig_text = minisign.sign_bytes(
+        root_bytes, key, f"signature for {publisher}/{slug} index",
+        f"{publisher}/{slug}@{prev}")
+    click.echo(click.style(f"✓ Re-signed index.json locally with key {key['keyId']}", fg="green"))
+
+    # prepare/PUT with files=[] — only the re-signed manifest objects move (the exact
+    # channel-set presign flow). fid's DELETE below is the finalize: it verifies the
+    # uploaded manifest no longer carries the channel, then syncs its own channel state
+    # (a 409 here means the uploaded index still carries the channel — re-run to re-sign).
+    prep = fid.api_request(
+        f"/v1/fcm/games/{slug}/publish/prepare", method="POST", token=token,
+        body={"version": prev, "prerelease": False, "files": []})
+    uploads = (prep or {}).get("uploads") or {}
+    _put_bytes(uploads["index"], root_bytes, "application/json")
+    _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
+
+    resp = fid.api_request(f"/v1/fcm/games/{slug}/channels/{ch}", method="DELETE", token=token)
+    _echo_channel_removed(slug, ch, resp, prev=prev)
+
+
+def _echo_channel_removed(slug: str, ch: str, resp, prev: str | None = None) -> None:
+    """Success line + liveSync surfacing for a channel removal (shared BYO/managed)."""
+    consequence = ("the game is no longer publicly listed" if ch == "stable"
+                   else "the channel pointer is cleared")
+    was = f" (was {prev})" if prev else ""
+    click.echo(click.style(
+        f"✓ Removed {ch} from {slug}{was} — {consequence}.", fg="green", bold=True))
+    if isinstance(resp, dict) and resp.get("liveSync"):
+        sync = resp["liveSync"]
+        if sync == "FAILED":
+            click.echo(click.style(
+                f"warning: live manifest sync FAILED: {resp.get('liveError') or 'unknown'} — "
+                "re-run to retry.", fg="yellow"))
+        else:
+            live = resp.get("liveVersion")
+            click.echo(f"  live manifest sync: {sync}" + (f" (live: {live})" if live else ""))
+
+
+def _guard_byo_signer(publisher: str, slug: str, key: dict) -> None:
+    """Refuse local signing when the LIVE manifest is signed by a DIFFERENT key.
+
+    A mismatch means the publisher is platform-managed (KMS) or the key rotated -
+    a locally-signed index gets rejected by every launcher. Bit live 2026-08-05:
+    a retired BYO key re-signed a managed game's index and the launcher went dark.
+    """
+    from foundry_cli.core import minisign, fcm_manifest as fm
+    sig = fm.fetch_index_sig(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    if not sig:
+        return  # first publish / sig unreachable - nothing to compare against
+    live = minisign.sig_key_id(sig)
+    if live and live != key["keyId"]:
+        raise click.ClickException(
+            f"The live manifest is signed by key {live}, but your local key is {key['keyId']}. "
+            "This publisher looks platform-managed (or the key rotated). Use --managed, or "
+            "re-register your local key before signing locally.")
+
+
+def _put_bytes(url: str, data: bytes, content_type: str) -> None:
+    """PUT raw bytes to a presigned URL (small manifest objects)."""
+    import tempfile
+
+    with tempfile.NamedTemporaryFile(delete=False) as tf:
+        tf.write(data)
+        tmp = tf.name
+    try:
+        fid.put_file(url, tmp, content_type=content_type)
+    finally:
+        os.unlink(tmp)
 
 
 # ---------------------------------------------------------------------------

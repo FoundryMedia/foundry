@@ -4,7 +4,18 @@ import sys
 import click
 
 from foundry_cli.core.cli import FoundryGroup
-from foundry_cli.core.project.workspace import load_workspace, filter_services, DiscoveredService, ServiceKind
+from foundry_cli.core.errors import FoundryError
+from foundry_cli.core.project.workspace import (
+    DiscoveredService,
+    ServiceKind,
+    filter_services,
+    find_workspace_file,
+    load_multi_workspace,
+    load_workspace,
+    load_workspace_file,
+    select_services_by_names,
+    service_repo_root,
+)
 from foundry_cli.core.project.service_runtime import RuntimeMatch, ServiceRuntime
 from foundry_cli.core.project.manifest import ServiceConfig
 from foundry_cli.core.ui.runner import ServicesUI
@@ -15,7 +26,18 @@ from foundry_cli.core.logging import (
 )
 
 
-@click.group(cls=FoundryGroup, invoke_without_command=False)
+class RunGroup(FoundryGroup):
+    """FoundryGroup with profile shorthand: ``dev:core`` → ``dev --profile core``."""
+
+    def resolve_command(self, ctx: click.Context, args):
+        if args and ":" in args[0] and not args[0].startswith("-"):
+            base, _, profile = args[0].partition(":")
+            if profile and base in self.commands:
+                args = [base, "--profile", profile, *args[1:]]
+        return super().resolve_command(ctx, args)
+
+
+@click.group(cls=RunGroup, invoke_without_command=False)
 @click.option("-d", "--debug", is_flag=True, default=False, help="Show debug output (must appear before the subcommand; aliases will hoist it).")
 @click.pass_context
 def run(ctx: click.Context, debug: bool) -> None:
@@ -28,12 +50,63 @@ def run(ctx: click.Context, debug: bool) -> None:
 run.help_tip = "VSCode users, in Settings set terminal.integrated.stickyScroll.enabled to false"
 
 
-def _run_services_ui(command: str, *, filter_svc: str | None = None, migrate_db: bool = False) -> None:
+def _run_services_ui(
+    command: str,
+    *,
+    filter_svc: str | None = None,
+    migrate_db: bool = False,
+    profile: str | None = None,
+) -> None:
     """Common logic for running services with the UI."""
     import click
     ctx = click.get_current_context()
-    workspace, services_root, services, sidecars = load_workspace(command=command)
     debug = bool((ctx.obj or {}).get("debug"))
+
+    notices: list[str] = []
+    multi = False
+    if profile:
+        # Profile run: always the cross-repo workspace view.
+        ws_path = find_workspace_file()
+        if ws_path is None:
+            raise FoundryError(
+                f"Profile '{profile}' requires a foundry.workspace.json "
+                "(searched the current directory, its parents, and their immediate "
+                "children; set FOUNDRY_WORKSPACE to point at one)."
+            )
+        ws_file = load_workspace_file(ws_path)
+        if profile not in ws_file.profiles:
+            available = ", ".join(sorted(ws_file.profiles)) or "(none defined)"
+            raise FoundryError(
+                f"Unknown profile '{profile}' in {ws_path}. Available: {available}"
+            )
+        multi = True
+        workspace, services_root, services, sidecars, notices = load_multi_workspace(
+            ws_file, command=command
+        )
+        services, sidecars, missing = select_services_by_names(
+            services, sidecars, ws_file.profiles[profile]
+        )
+        for name in missing:
+            notices.append(
+                f"profile '{profile}' names unknown service '{name}' (repo not cloned?)"
+            )
+    else:
+        try:
+            workspace, services_root, services, sidecars = load_workspace(command=command)
+        except FoundryError:
+            # Not inside a repo with a manifest — fall back to the cross-repo
+            # workspace (everything discoverable), if one is findable.
+            ws_path = find_workspace_file()
+            if ws_path is None:
+                raise
+            ws_file = load_workspace_file(ws_path)
+            multi = True
+            workspace, services_root, services, sidecars, notices = load_multi_workspace(
+                ws_file, command=command
+            )
+
+    for note in notices:
+        click.echo(click.style(f"Note: {note}", fg="yellow"))
 
     # Apply service filter if specified
     if filter_svc:
@@ -47,7 +120,14 @@ def _run_services_ui(command: str, *, filter_svc: str | None = None, migrate_db:
                     fg="yellow",
                 ))
                 click.echo(f"  Available: {', '.join(sorted(known))}")
-            services, sidecars = filter_services(services, sidecars, filter_names, workspace.root)
+            if multi:
+                # Cross-repo: plain name selection (no Node dependency
+                # expansion across repo boundaries).
+                services, sidecars, _ = select_services_by_names(
+                    services, sidecars, filter_names
+                )
+            else:
+                services, sidecars = filter_services(services, sidecars, filter_names, workspace.root)
 
     if debug:
         project_name = workspace.manifests[0].name or "Unnamed Project"
@@ -90,7 +170,16 @@ def _run_services_ui(command: str, *, filter_svc: str | None = None, migrate_db:
             for sidecar in service_sidecars:
                 print(f"      +-- {sidecar.name} (sidecar: {sidecar.config.command})")
 
-    # Create runners: sidecars use create_sidecar_runner, services use create_runner
+    # Create runners: sidecars use create_sidecar_runner, services use create_runner.
+    # Roots resolve PER SERVICE (each repo owns its own pem paths / env files) —
+    # in single-repo mode the walk-up lands on workspace.root anyway.
+    svc_by_name = {s.name: s for s in services}
+
+    def _root_for(svc: DiscoveredService | None):
+        if svc is None:
+            return workspace.root
+        return service_repo_root(svc.path) or workspace.root
+
     runners = {}
     for sidecar in sidecars:
         # Use parent/sidecar format as the key to match all_services
@@ -98,10 +187,14 @@ def _run_services_ui(command: str, *, filter_svc: str | None = None, migrate_db:
         # Display name shows tree hierarchy: └─ name#sidecar
         display_name = f"└─ {sidecar.name}#sidecar"
         runners[sidecar_id] = create_sidecar_runner(
-            sidecar, workspace.root, debug=debug, sidecar_id=sidecar_id, display_name=display_name
+            sidecar, _root_for(svc_by_name.get(sidecar.parent_service)),
+            debug=debug, sidecar_id=sidecar_id, display_name=display_name,
         )
     for svc in services:
-        runners[svc.name] = create_runner(svc, debug=debug, command=command, migrate_db=migrate_db)
+        runners[svc.name] = create_runner(
+            svc, debug=debug, command=command, migrate_db=migrate_db,
+            workspace_root=_root_for(svc),
+        )
 
     app = ServicesUI(all_services, runners, debug=debug)
     
@@ -126,17 +219,19 @@ def _run_services_ui(command: str, *, filter_svc: str | None = None, migrate_db:
 @run.command(add_help_option=False)
 @click.option("--filter", "filter_svc", default=None, help="Comma-separated list of services to run (dependencies are included automatically).")
 @click.option("--migrate-db", "-mdb", is_flag=True, default=False, help="Run Liquibase database migrations before starting services that have a database block.")
+@click.option("--profile", "profile", default=None, help="Named workspace profile from foundry.workspace.json (shorthand: `foundry run dev:<profile>`).")
 @click.pass_context
-def dev(ctx: click.Context, filter_svc: str | None, migrate_db: bool) -> None:
+def dev(ctx: click.Context, filter_svc: str | None, migrate_db: bool, profile: str | None) -> None:
     """Run the platform in development mode with the Services UI."""
-    _run_services_ui("dev", filter_svc=filter_svc, migrate_db=migrate_db)
+    _run_services_ui("dev", filter_svc=filter_svc, migrate_db=migrate_db, profile=profile)
 
 
 @run.command(add_help_option=False)
 @click.option("--filter", "filter_svc", default=None, help="Comma-separated list of services to run (dependencies are included automatically).")
+@click.option("--profile", "profile", default=None, help="Named workspace profile from foundry.workspace.json (shorthand: `foundry run build:<profile>`).")
 @click.pass_context
-def build(ctx: click.Context, filter_svc: str | None) -> None:
+def build(ctx: click.Context, filter_svc: str | None, profile: str | None) -> None:
     """Run the build command for all services."""
-    _run_services_ui("build", filter_svc=filter_svc)
+    _run_services_ui("build", filter_svc=filter_svc, profile=profile)
     
     

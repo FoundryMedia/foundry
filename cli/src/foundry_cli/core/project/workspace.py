@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+import os
 from dataclasses import dataclass, replace
 from enum import Enum
 from pathlib import Path
@@ -27,6 +29,24 @@ class FoundryWorkspace:
 
     root: Path
     manifests: tuple[ProjectManifest, ...]
+
+
+WORKSPACE_FILE_NAME = "foundry.workspace.json"
+
+
+@dataclass(frozen=True)
+class WorkspaceFile:
+    """The master multi-repo manifest (``foundry.workspace.json``).
+
+    Owned by the platform's ops repo. Names the member repos (resolved as
+    sibling clones of the ops repo) and the named run profiles — each profile
+    is a list of manifest service names, e.g.
+    ``{"core": ["fid", "auth-efga"]}`` → ``foundry run dev:core``.
+    """
+
+    path: Path
+    repos: tuple[str, ...]
+    profiles: dict[str, tuple[str, ...]]
 
 
 @dataclass(frozen=True)
@@ -87,23 +107,219 @@ def infer_service_kind(services_root: Path, service_dir: Path) -> ServiceKind:
 
 
 def find_manifest_path(start: Path | None = None) -> Path:
-    """Find the nearest `foundry.json` by walking up from `start` (or CWD)."""
+    """Find the nearest manifest by walking up from `start` (or CWD).
+
+    Per directory, `.foundry/foundry.json` is preferred (the multi-repo
+    convention for repos opted into an ops repo); a root-level `foundry.json`
+    is the legacy/monorepo location and remains fully supported.
+    """
 
     cur = (start or Path.cwd()).resolve()
     if cur.is_file():
         cur = cur.parent
 
     while True:
-        candidate = cur / "foundry.json"
-        if candidate.exists():
-            return candidate
+        for candidate in (cur / ".foundry" / "foundry.json", cur / "foundry.json"):
+            if candidate.exists():
+                return candidate
         if cur.parent == cur:
             break
         cur = cur.parent
 
     raise FoundryError(
-        "Could not locate project manifest (foundry.json) in the current directory or any parent directory."
+        "Could not locate project manifest (.foundry/foundry.json or foundry.json) "
+        "in the current directory or any parent directory."
     )
+
+
+def service_repo_root(path: Path) -> Path | None:
+    """Walk up from a service directory to the repo root that owns its manifest.
+
+    In a multi-repo workspace each service's tunnel pem paths, env files
+    (``.foundry/dev.env``), and local config resolve against ITS OWN repo
+    root — never the aggregate workspace root.
+    """
+    probe = path.resolve()
+    while probe.parent != probe:
+        if (probe / ".foundry" / "foundry.json").exists() or (probe / "foundry.json").exists():
+            return probe
+        probe = probe.parent
+    return None
+
+
+def find_workspace_file(start: Path | None = None) -> Path | None:
+    """Locate the master ``foundry.workspace.json``, or None.
+
+    Order: the ``FOUNDRY_WORKSPACE`` env var (a file, or a directory holding
+    one), then a walk up from ``start`` (or CWD) checking each directory AND
+    its immediate children — the file lives at an ops repo's root, a SIBLING
+    of the service repos, so running inside any sibling clone still finds it.
+    """
+    explicit = os.environ.get("FOUNDRY_WORKSPACE")
+    if explicit:
+        p = Path(explicit).expanduser().resolve()
+        if p.is_dir():
+            p = p / WORKSPACE_FILE_NAME
+        if p.is_file():
+            return p
+        raise FoundryError(
+            f"FOUNDRY_WORKSPACE points at '{explicit}' but no "
+            f"{WORKSPACE_FILE_NAME} was found there."
+        )
+
+    cur = (start or Path.cwd()).resolve()
+    if cur.is_file():
+        cur = cur.parent
+
+    while True:
+        direct = cur / WORKSPACE_FILE_NAME
+        if direct.is_file():
+            return direct
+        try:
+            children = sorted(
+                c for c in cur.iterdir() if c.is_dir() and not c.name.startswith(".")
+            )
+        except OSError:
+            children = []
+        for child in children:
+            candidate = child / WORKSPACE_FILE_NAME
+            if candidate.is_file():
+                return candidate
+        if cur.parent == cur:
+            return None
+        cur = cur.parent
+
+
+def load_workspace_file(path: Path) -> WorkspaceFile:
+    """Parse and validate a ``foundry.workspace.json``."""
+    try:
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
+    except Exception as e:
+        raise FoundryError(f"Could not parse {path}: {e}") from e
+    if not isinstance(data, dict):
+        raise FoundryError(f"Invalid {path}: expected a JSON object at the root.")
+
+    raw_repos = data.get("repos")
+    if not isinstance(raw_repos, list) or not all(
+        isinstance(r, str) and r for r in raw_repos
+    ):
+        raise FoundryError(f"Invalid {path}: 'repos' must be a list of repo names.")
+
+    raw_profiles = data.get("profiles") or {}
+    if not isinstance(raw_profiles, dict):
+        raise FoundryError(
+            f"Invalid {path}: 'profiles' must be an object of name -> service names."
+        )
+    profiles: dict[str, tuple[str, ...]] = {}
+    for name, members in raw_profiles.items():
+        if not isinstance(members, list) or not all(
+            isinstance(m, str) and m for m in members
+        ):
+            raise FoundryError(
+                f"Invalid {path}: profile '{name}' must be a list of service names."
+            )
+        profiles[str(name)] = tuple(members)
+
+    return WorkspaceFile(path=path, repos=tuple(raw_repos), profiles=profiles)
+
+
+def _resolve_repo_dir(ws_path: Path, repo: str) -> Path | None:
+    """Resolve a member repo clone.
+
+    The workspace file sits at the ops repo's root, so member repos are
+    siblings of the OPS REPO (``ws_path.parent.parent / repo``); a workspace
+    file placed directly in an aggregator directory resolves its repos as
+    children (``ws_path.parent / repo``).
+    """
+    for base in (ws_path.parent.parent, ws_path.parent):
+        candidate = base / repo
+        if candidate.is_dir():
+            return candidate
+    return None
+
+
+def load_multi_workspace(
+    ws_file: WorkspaceFile,
+    command: str = "dev",
+) -> tuple[FoundryWorkspace, Path, list[DiscoveredService], list[DiscoveredSidecar], list[str]]:
+    """Aggregate every member repo's own workspace into one runnable view.
+
+    Returns ``(workspace, services_root, services, sidecars, notices)``.
+    A repo that isn't cloned locally, has no manifest, or fails to load is
+    skipped with a notice — a partially-checked-out workspace still runs.
+    """
+    manifests: list[ProjectManifest] = []
+    services: list[DiscoveredService] = []
+    sidecars: list[DiscoveredSidecar] = []
+    notices: list[str] = []
+    seen: dict[str, str] = {}  # service name -> providing repo
+
+    for repo in ws_file.repos:
+        repo_dir = _resolve_repo_dir(ws_file.path, repo)
+        if repo_dir is None:
+            notices.append(f"skipping '{repo}': not cloned locally")
+            continue
+        try:
+            ws, _root, repo_services, repo_sidecars = load_workspace(
+                start=repo_dir, command=command
+            )
+        except FoundryError as e:
+            notices.append(f"skipping '{repo}': {e}")
+            continue
+        if ws.root != repo_dir.resolve():
+            # The walk-up escaped the repo (no manifest inside it) — whatever
+            # it found belongs to something else.
+            notices.append(f"skipping '{repo}': no foundry manifest in the repo")
+            continue
+
+        manifests.extend(ws.manifests)
+        repo_service_names: set[str] = set()
+        for svc in repo_services:
+            if svc.name in seen:
+                notices.append(
+                    f"skipping duplicate service '{svc.name}' from '{repo}' "
+                    f"(already provided by '{seen[svc.name]}')"
+                )
+                continue
+            seen[svc.name] = repo
+            repo_service_names.add(svc.name)
+            services.append(svc)
+        sidecars.extend(
+            sc for sc in repo_sidecars if sc.parent_service in repo_service_names
+        )
+
+    root = ws_file.path.parent.parent
+    workspace = FoundryWorkspace(root=root, manifests=tuple(manifests))
+    return workspace, root, services, sidecars, notices
+
+
+def select_services_by_names(
+    services: list[DiscoveredService],
+    sidecars: list[DiscoveredSidecar],
+    names: tuple[str, ...] | list[str],
+) -> tuple[list[DiscoveredService], list[DiscoveredSidecar], list[str]]:
+    """Plain name-based selection (profiles / multi-repo --filter).
+
+    Unlike :func:`filter_services` this does no Node dependency expansion —
+    profile members are explicit. Returns ``(services, sidecars, missing)``.
+    """
+    included = set(names)
+    selected = [s for s in services if s.name in included]
+    selected_sidecars = [sc for sc in sidecars if sc.parent_service in included]
+    missing = sorted(included - {s.name for s in selected})
+    return selected, selected_sidecars, missing
+
+
+def manifest_workspace_root(manifest_path: Path) -> Path:
+    """The workspace/repo root a manifest governs.
+
+    A manifest at `<repo>/.foundry/foundry.json` governs `<repo>`, not the
+    `.foundry` directory itself.
+    """
+    root = manifest_path.parent
+    if root.name == ".foundry":
+        return root.parent
+    return root
 
 
 def resolve_services_root(manifest: ProjectManifest) -> Path:
@@ -122,7 +338,7 @@ def resolve_services_root(manifest: ProjectManifest) -> Path:
             f"Invalid `servicesDir` in {manifest.path.name}: must be a relative path, got '{raw}'."
         )
 
-    root = (manifest.path.parent / rel).resolve()
+    root = (manifest_workspace_root(manifest.path) / rel).resolve()
     if not root.exists() or not root.is_dir():
         raise FoundryError(
             f"Could not locate services directory '{raw}' next to {manifest.path.name}. "
@@ -130,6 +346,39 @@ def resolve_services_root(manifest: ProjectManifest) -> Path:
         )
 
     return root
+
+
+_STACK_TYPE_TO_KIND = {
+    "backend": ServiceKind.backend,
+    "frontend": ServiceKind.frontend,
+    "worker": ServiceKind.worker,
+}
+
+
+def discover_manifest_services(manifest: ProjectManifest) -> list[DiscoveredService]:
+    """Resolve services straight from the manifest's service declarations.
+
+    Multi-repo manifests (schemaVersion >= 0.7.0) place each service at
+    ``services.<name>.path`` inside its own repository — there is no ``apps/``
+    directory to scan. A declared service whose directory is missing is
+    skipped so a partially-checked-out workspace still loads.
+    """
+    base = manifest_workspace_root(manifest.path)
+    services: list[DiscoveredService] = []
+    for name, cfg in manifest.services_config.items():
+        svc_dir = (base / Path(cfg.effective_path)).resolve()
+        if not svc_dir.is_dir():
+            continue
+        services.append(
+            DiscoveredService(
+                name=name,
+                path=svc_dir,
+                runtime=detect_runtime(svc_dir),
+                kind=_STACK_TYPE_TO_KIND.get(cfg.stack_type or "", ServiceKind.unknown),
+                config=cfg,
+            )
+        )
+    return services
 
 
 def _build_path_to_key_map(
@@ -396,8 +645,7 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
 
     manifest_path = find_manifest_path(start)
     manifest = load_manifest_from_path(manifest_path)
-    services_root = resolve_services_root(manifest)
-    workspace_root = manifest_path.parent
+    workspace_root = manifest_workspace_root(manifest_path)
 
     # Load workspace.yml path map for dir-name → manifest-key resolution
     path_to_key: dict[str, str] = {}
@@ -406,10 +654,30 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
     if ws_data and isinstance(ws_data.get("services"), dict):
         path_to_key = _build_path_to_key_map(workspace_root, ws_data["services"])
 
-    # Discover traditional services (Spring Boot, FastAPI, etc.) from apps/
-    traditional_services = discover_services(
-        services_root, manifest, path_to_key=path_to_key,
-    )
+    apps_root = workspace_root / Path(manifest.services_dir_name)
+    if apps_root.is_dir():
+        # Monorepo layout: scan the services directory (apps/ by default).
+        services_root = resolve_services_root(manifest)
+        traditional_services = discover_services(
+            services_root, manifest, path_to_key=path_to_key,
+        )
+    else:
+        # Multi-repo layout (v0.7.0): no apps/ dir — each declared service
+        # resolves via its own `path` relative to the manifest.
+        traditional_services = discover_manifest_services(manifest)
+        if not traditional_services:
+            # Nothing declared/resolvable either way: raise the original,
+            # descriptive services-directory error.
+            resolve_services_root(manifest)
+        services_root = workspace_root
+        # Let Node-package discovery resolve manifest keys too (e.g. the dir
+        # `app` carrying the manifest service `web`). A service at the repo
+        # ROOT (path ".") has no path segment — key it by the repo dir name
+        # (foundry-hub's `hub` service) or Node discovery would synthesize a
+        # duplicate under the package.json name.
+        for svc_name, svc_cfg in manifest.services_config.items():
+            dir_name = Path(svc_cfg.effective_path).name or workspace_root.name
+            path_to_key.setdefault(dir_name, svc_name)
     
     # Filter to only non-Node services (Spring Boot, FastAPI)
     non_node_services = [
@@ -459,7 +727,14 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
             )
         )
 
-    # Combine: Node packages first (dependencies before dependents), then other services
+    # Combine: Node packages first (dependencies before dependents), then other
+    # services. A manifest-declared service whose NAME is already served by the
+    # Node path (e.g. a vite frontend) is dropped so it isn't started twice —
+    # dedupe by name, NOT path: two manifest services may share one directory
+    # (foundry-app's `web` and `desktop` both live in app/, differing only in
+    # which package.json script they run).
+    node_names = {s.name for s in node_services}
+    non_node_services = [s for s in non_node_services if s.name not in node_names]
     all_services = node_services + non_node_services
 
     # Filter out disabled services
@@ -558,12 +833,21 @@ def filter_services(
 
 __all__ = [
     "FoundryWorkspace",
+    "WorkspaceFile",
+    "WORKSPACE_FILE_NAME",
     "DiscoveredService",
     "DiscoveredSidecar",
     "ServiceKind",
     "find_manifest_path",
+    "find_workspace_file",
+    "load_workspace_file",
+    "load_multi_workspace",
+    "select_services_by_names",
+    "service_repo_root",
+    "manifest_workspace_root",
     "resolve_services_root",
     "discover_services",
+    "discover_manifest_services",
     "load_workspace",
     "filter_services",
 ]

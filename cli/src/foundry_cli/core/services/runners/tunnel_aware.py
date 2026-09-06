@@ -34,6 +34,7 @@ class TunnelAwareRunner(ServiceRunner):
         inner_runner: ServiceRunner,
         tunnel_config: ManifestTunnelConfig,
         workspace_root: Path | None = None,
+        injected_env_keys: tuple[str, ...] = (),
     ) -> None:
         # Don't call super().__init__ since we're wrapping another runner
         self._inner = inner_runner
@@ -47,6 +48,7 @@ class TunnelAwareRunner(ServiceRunner):
             password=tunnel_config.password,
         )
         self._workspace_root = workspace_root
+        self._injected_env_keys = tuple(injected_env_keys)
         self._tunnel: SshTunnelRunner | None = None
         self._inner_log_task: asyncio.Task | None = None
         self._inner_status_task: asyncio.Task | None = None
@@ -85,6 +87,13 @@ class TunnelAwareRunner(ServiceRunner):
         cfg = self._tunnel_config
         
         await self._log(f"[tunnel] Configuring SSH tunnel: 0.0.0.0:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} via {cfg.user}@{cfg.host}", "INFO")
+        if self._injected_env_keys:
+            await self._log(
+                "[tunnel] dev target = PROD — service env carries: "
+                + ", ".join(self._injected_env_keys)
+                + " (values never logged)",
+                "INFO",
+            )
         
         # Emit starting status
         await self._combined_status_queue.put(

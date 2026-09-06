@@ -127,11 +127,15 @@ class NodeServiceRunner(ProcessBackedRunner):
         debug: bool = False,
         port: int | None = None,
         command: str = "dev",
+        script: str | None = None,
         args: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
     ) -> None:
         super().__init__(service, debug=debug, command=command)
         self._port = port
+        # package.json script to invoke; defaults to the run command name.
+        # A manifest `run.script` overrides it (e.g. "tauri" + args ["dev"]).
+        self._script = script or command
         self._args = args
         self._env = env or {}
         self._package_manager: PackageManager = "pnpm"
@@ -154,12 +158,12 @@ class NodeServiceRunner(ProcessBackedRunner):
             return
 
         # Check if the requested script exists
-        if not _has_script(package_json, self._command):
+        if not _has_script(package_json, self._script):
             await self._status_queue.put(
                 ServiceStatusEvent(
                     self.name, ServiceStatus.failed,
-                    detail=f"No '{self._command}' script in package.json",
-                    error=f"package.json does not have a '{self._command}' script.",
+                    detail=f"No '{self._script}' script in package.json",
+                    error=f"package.json does not have a '{self._script}' script.",
                     level="ERROR",
                 )
             )
@@ -172,7 +176,7 @@ class NodeServiceRunner(ProcessBackedRunner):
         # Try to extract port from script if not configured
         if self._port is None:
             scripts = _get_package_scripts(package_json)
-            script_content = scripts.get(self._command, "")
+            script_content = scripts.get(self._script, "")
             self._port = _extract_port_from_script(script_content)
 
         # Build the command
@@ -247,10 +251,10 @@ class NodeServiceRunner(ProcessBackedRunner):
         
         if self._workspace_root and pkg_name:
             # Run from workspace root with filter
-            cmd = [pnpm_cmd, "--filter", pkg_name, "run", self._command]
+            cmd = [pnpm_cmd, "--filter", pkg_name, "run", self._script]
         else:
             # Run directly in service directory
-            cmd = [pnpm_cmd, "run", self._command]
+            cmd = [pnpm_cmd, "run", self._script]
         
         if self._args:
             cmd.extend(["--", *self._args])
@@ -259,7 +263,7 @@ class NodeServiceRunner(ProcessBackedRunner):
     def _build_npm_command(self) -> list[str]:
         """Build npm run command."""
         npm_cmd = _get_package_manager_cmd("npm")
-        cmd = [npm_cmd, "run", self._command]
+        cmd = [npm_cmd, "run", self._script]
         if self._args:
             cmd.extend(["--", *self._args])
         return cmd
@@ -267,7 +271,7 @@ class NodeServiceRunner(ProcessBackedRunner):
     def _build_yarn_command(self) -> list[str]:
         """Build yarn run command."""
         yarn_cmd = _get_package_manager_cmd("yarn")
-        cmd = [yarn_cmd, self._command]
+        cmd = [yarn_cmd, self._script]
         if self._args:
             cmd.extend(self._args)
         return cmd
@@ -284,18 +288,20 @@ class NodeServiceRunner(ProcessBackedRunner):
             return None
 
     async def _wait_for_ready(self, proc) -> None:
-        """Wait for ready signal from stdout or port availability as fallback."""
-        host = "127.0.0.1"
+        """Wait for ready signal from stdout, or port availability as fallback."""
         port = self._port
-        
-        # Primary: wait for "Ready" message in stdout (set by log watcher)
-        # Secondary: poll for port as fallback
+
         while True:
             if proc.returncode is not None:
                 return  # Process exited, monitor handles status
-            
-            # Check if ready event was set by log watcher
-            if self._ready_event.is_set():
+
+            # Primary: ready pattern seen in the output (set by the log watcher).
+            # Fallback: the port actually accepting connections — the comment
+            # used to promise this but no polling existed, so any pattern miss
+            # meant a guaranteed timeout.
+            if self._ready_event.is_set() or (
+                port is not None and self._is_port_open(port)
+            ):
                 await self._status_queue.put(
                     ServiceStatusEvent(
                         self.name, ServiceStatus.healthy,
@@ -325,11 +331,33 @@ class NodeServiceRunner(ProcessBackedRunner):
 
             await asyncio.sleep(0.25)
 
+    _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
     def _check_ready_pattern(self, line: str) -> bool:
-        """Check if a log line matches any ready pattern."""
+        """Check if a log line matches any ready pattern.
+
+        Matched against the ANSI-stripped line: Vite colorizes its output even
+        when piped, and the escape codes land between "ready in"/"Local:" and
+        the rest of the phrase — every pattern silently missed and the web
+        service failed its 90s readiness wait while serving fine on :1420.
+        """
+        plain = self._ANSI_ESCAPE.sub("", line)
         for pattern in self.READY_PATTERNS:
-            if pattern.search(line):
+            if pattern.search(plain):
                 return True
+        return False
+
+    @staticmethod
+    def _is_port_open(port: int) -> bool:
+        """True if something accepts connections on the port (v4 or v6 loopback)."""
+        import socket
+
+        for host in ("127.0.0.1", "::1"):
+            try:
+                with socket.create_connection((host, port), timeout=0.25):
+                    return True
+            except OSError:
+                continue
         return False
 
     def events(self):

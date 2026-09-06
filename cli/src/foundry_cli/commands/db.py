@@ -31,7 +31,7 @@ from foundry_cli.core.project.manifest import (
     ProjectManifest,
     load_manifest_from_path,
 )
-from foundry_cli.core.project.workspace import find_manifest_path
+from foundry_cli.core.project.workspace import find_manifest_path, manifest_workspace_root
 
 
 # JDBC URL templates per engine
@@ -98,10 +98,15 @@ def _open_tunnel(tunnel_cfg: dict[str, Any], workspace_root: Path):
 
     click.echo(click.style(f"  Connecting to {host}...", fg="cyan"))
 
+    # paramiko>=4 removed DSSKey; hand sshtunnel a pre-loaded PKey instead of
+    # a path so its read_private_key_file (which references DSSKey) never runs.
+    from foundry_cli.core.services.ssh_tunnel import load_ssh_pkey
+
+    pkey = load_ssh_pkey(key_path) if key_path else None
     tunnel = SSHTunnelForwarder(
         (host, 22),
         ssh_username=user,
-        ssh_pkey=key_path,
+        ssh_pkey=pkey if pkey is not None else key_path,
         remote_bind_address=(remote_host, remote_port),
         local_bind_address=("0.0.0.0", local_port),
         set_keepalive=30.0,
@@ -307,7 +312,7 @@ def _run_db_command(
 
     manifest_path = find_manifest_path()
     manifest = load_manifest_from_path(manifest_path)
-    workspace_root = manifest_path.parent
+    workspace_root = manifest_workspace_root(manifest_path)
     foundry_dir = workspace_root / ".foundry"
 
     # Find all databases in the manifest

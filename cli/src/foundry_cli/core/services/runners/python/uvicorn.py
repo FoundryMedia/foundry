@@ -99,11 +99,18 @@ class UvicornServiceRunner(ProcessBackedRunner):
             
             pip_cmd = _get_pip_cmd()
             # Run pip without -q so we can see progress
+            import subprocess as _sp
             install_proc = await asyncio.create_subprocess_exec(
                 pip_cmd, "install", "-r", str(requirements_txt),
                 cwd=str(self.cwd),
+                stdin=asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # Merge stderr into stdout
+                **(
+                    {"creationflags": _sp.CREATE_NO_WINDOW}
+                    if sys.platform == "win32"
+                    else {}
+                ),
             )
             
             # Stream pip output to logs

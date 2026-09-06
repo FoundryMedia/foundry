@@ -191,6 +191,43 @@ def _find_staged_dir(archive: Path) -> Path | None:
     return None
 
 
+def _stamp_project_version(root: Path, version: str | None) -> None:
+    """Write ProjectVersion=<version> into Config/DefaultGame.ini's
+    GeneralProjectSettings BEFORE the cook, so the game can read its own version
+    at runtime (UGeneralProjectSettings) and a hand-typed UI chip never rots.
+    Only stamps when an explicit --version was given (dev cooks stay untouched).
+    """
+    if not version:
+        return
+    ini = root / "Config" / "DefaultGame.ini"
+    if not ini.exists():
+        return
+    section = "[/Script/EngineSettings.GeneralProjectSettings]"
+    lines = ini.read_text(encoding="utf-8").splitlines()
+    out: list[str] = []
+    in_section = False
+    stamped = False
+    for line in lines:
+        stripped = line.strip()
+        if stripped.startswith("["):
+            if in_section and not stamped:
+                out.append(f"ProjectVersion={version}")
+                stamped = True
+            in_section = stripped == section
+        if in_section and stripped.lower().startswith("projectversion="):
+            if not stamped:
+                out.append(f"ProjectVersion={version}")
+                stamped = True
+            continue
+        out.append(line)
+    if not stamped:
+        if not in_section:
+            out.extend(["", section])
+        out.append(f"ProjectVersion={version}")
+    ini.write_text("\n".join(out) + "\n", encoding="utf-8")
+    click.echo(f"Stamped ProjectVersion={version} into Config/DefaultGame.ini")
+
+
 def _package_client(root: Path, cfg: dict, version: str | None, out_dir: Path | None) -> Path:
     """Cook the UE client and zip it. Returns the .zip path."""
     build = cfg.get("build") or {}
@@ -198,6 +235,7 @@ def _package_client(root: Path, cfg: dict, version: str | None, out_dir: Path | 
     if btype not in ("ue5", "ue4"):
         raise FoundryError(f"build.type {btype!r} not supported by `package --client` yet (Unreal only).")
 
+    _stamp_project_version(root, version)
     staged = _cook_ue_client(root, build, version or "dev")
     _validate_chunked_output(staged, chunking=bool(build.get("chunking", True)))
 
@@ -331,6 +369,7 @@ def _package_server(root: Path, cfg: dict, version: str | None, out_dir: Path | 
             "    imageName: <your-game>                # default <gameId>-server\n"
         )
 
+    _stamp_project_version(root, version)
     ver = version or "dev"
     game_id = cfg.get("gameId", "game")
     image_name = server.get("imageName") or f"{game_id}-server"

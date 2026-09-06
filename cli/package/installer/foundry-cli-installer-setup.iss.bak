@@ -1,0 +1,67 @@
+#ifndef MyVersion
+#define MyVersion "0.3.0"
+#endif
+
+#define MyAppName "Foundry CLI"
+#define SourceFolder "..\..\dist\foundry\*"
+
+[Setup]
+AppName={#MyAppName}
+AppVersion={#MyVersion}
+AppPublisher=Foundry Media
+; prefer autopf so installer picks correct Program Files for elevated/non-elevated runs
+DefaultDirName={autopf}\Foundry CLI
+; ensure the directory selection page is shown
+DisableDirPage=no
+; show program group page
+DisableProgramGroupPage=yes
+CreateAppDir=yes
+PrivilegesRequired=admin
+Compression=lzma
+SolidCompression=yes
+OutputDir=.
+OutputBaseFilename=foundrycli-{#MyVersion}-WindowsInstaller
+
+[Files]
+; PyInstaller onedir output (recursively copy everything)
+Source: "{#SourceFolder}"; DestDir: "{app}"; Flags: recursesubdirs createallsubdirs ignoreversion
+
+[Icons]
+Name: "{group}\Foundry CLI (Command Line)"; Filename: "{app}\foundry.exe"
+
+[Run]
+
+[Code]
+const
+  My_HWND_BROADCAST = $FFFF;
+  WM_SETTINGCHANGE = $1A;
+
+function SendMessageTimeout(hWnd: LongWord; Msg: LongWord; wParam: LongWord; lParam: String; fuFlags: LongWord; uTimeout: LongWord; var pdwResult: LongWord): LongWord;
+  external 'SendMessageTimeoutA@user32.dll stdcall';
+
+procedure AddToSystemPath(const Dir: string);
+var
+  OldPath: string;
+  dwResult: LongWord;
+begin
+  // read current PATH into OldPath; RegQueryStringValue returns Boolean
+  if not RegQueryStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OldPath) then
+    OldPath := '';
+
+  if Pos(UpperCase(Dir), UpperCase(OldPath)) = 0 then
+  begin
+    if OldPath = '' then
+      RegWriteStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', Dir)
+    else
+      RegWriteStringValue(HKLM, 'SYSTEM\CurrentControlSet\Control\Session Manager\Environment', 'Path', OldPath + ';' + Dir);
+    SendMessageTimeout(My_HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', 0, 5000, dwResult);
+  end;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+begin
+  if CurStep = ssPostInstall then
+  begin
+    AddToSystemPath(ExpandConstant('{app}'));
+  end;
+end;

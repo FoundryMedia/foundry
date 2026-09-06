@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import signal
+import subprocess
 import sys
 from asyncio.subprocess import Process
 from pathlib import Path
@@ -113,13 +114,25 @@ class ProcessBackedRunner(ServiceRunner):
             )
         )
 
+        # Console isolation is load-bearing for the TUI. A child that inherits
+        # our console's stdin handle (node and java both do this) can reset the
+        # console input mode: echo comes back ON and VT mouse parsing dies —
+        # the terminal then paints raw SGR mouse reports (^[[<35;x;yM ...) all
+        # over the TUI and text selection stops working. DEVNULL stdin plus a
+        # detached hidden console (Windows) keeps children off our console.
+        spawn_kwargs: dict = {}
+        if sys.platform == "win32":
+            spawn_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(cwd or self.cwd),
             env=env,
+            stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             limit=_STREAM_READER_LIMIT,
+            **spawn_kwargs,
         )
 
         assert self._proc.stdout is not None

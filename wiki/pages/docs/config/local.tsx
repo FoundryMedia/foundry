@@ -46,6 +46,49 @@ services:
           <code>config.defaults.yml</code>, so your personal file only needs the values that differ.
         </p>
 
+        <h2>Dev-run env files and targets</h2>
+        <p>
+          <code>foundry run dev</code> resolves each service{"'"}s environment before starting it:
+          manifest <code>run.env</code>, then the committed <code>.foundry/dev.env</code>, then the
+          gitignored <code>.foundry/dev.local.env</code>. From that stack it picks a target per
+          service: <code>FOUNDRY_DEV_TARGET=prod</code> starts the manifest{"'"}s SSH tunnel and
+          injects database credentials pointed at it; <code>local</code> (or nothing configured)
+          skips the tunnel entirely and the service{"'"}s own local defaults apply.
+        </p>
+        <pre><code>{`# .foundry/dev.env — COMMITTED team default
+FOUNDRY_DEV_TARGET=prod
+
+# .foundry/dev.local.env — GITIGNORED personal override
+FOUNDRY_DEV_TARGET=local`}</code></pre>
+        <p>
+          The tunnel itself can autowire from AWS when the manifest opts in — all fields optional:
+          <code>bastionTag</code> resolves the host by EC2 Name tag when the host variable is unset,
+          <code>keySecret</code> fetches the pem from Secrets Manager when the key file is missing,
+          and <code>credentialsSecret</code>/<code>injectEnv</code> inject database credentials into
+          the service process (never written to disk).
+        </p>
+
+        <h2>Multi-repo workspaces and profiles</h2>
+        <p>
+          A platform{"'"}s ops repo can carry a master <code>foundry.workspace.json</code> at its
+          root naming the member repos (sibling clones) and named run profiles:
+        </p>
+        <pre><code>{`{
+  "repos": ["fid", "foundry-auth-efga", "foundry-app"],
+  "profiles": {
+    "core": ["fid", "auth-efga"],
+    "web": ["fid", "auth-efga", "web"]
+  }
+}`}</code></pre>
+        <p>
+          <code>foundry run dev:core</code> (shorthand for <code>dev --profile core</code>) boots
+          that profile{"'"}s services from every member repo in one TUI — each service keeps its own
+          repo{"'"}s env files, tunnel, and credentials. Running <code>foundry run dev</code> from a
+          directory with no manifest falls back to the full workspace (everything discoverable).
+          Repos not cloned locally are skipped with a notice. <code>FOUNDRY_WORKSPACE</code> points
+          at a specific workspace file when discovery shouldn{"'"}t walk the filesystem.
+        </p>
+
         <h2>GitHub token shortcut</h2>
         <pre><code>foundry github auth --token ghp_... --save</code></pre>
         <p>

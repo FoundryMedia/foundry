@@ -4,16 +4,17 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "foundry-cli"
-version = "0.8.0"
+version = "0.9.0"
 description = "Foundry CLI - run and manage platform apps"
 authors = [{name="Foundry"}]
 requires-python = ">=3.9"
 dependencies = [
   "click",
   "colorama",
+  "cryptography",
   "jsonschema",
   "pyyaml",
-  "textual==0.56.4",
+  "textual==8.2.8",
   "sshtunnel>=0.4.0"
 ]
 

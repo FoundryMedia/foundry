@@ -4,9 +4,11 @@ from __future__ import annotations
 import asyncio
 import os
 import re
-from collections import defaultdict
+import subprocess
+import sys
 from dataclasses import dataclass
 from datetime import datetime
+from pathlib import Path
 from typing import Dict, Optional
 
 from textual.app import App, ComposeResult
@@ -14,8 +16,12 @@ from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
 from textual import events
-from textual.widgets import Footer, Label, ListItem, ListView, RichLog, Static
+from textual.selection import Selection
+from textual.strip import Strip
+from textual.theme import Theme
+from textual.widgets import Label, ListItem, ListView, RichLog, Static
 from rich.ansi import AnsiDecoder
+from rich.markup import escape
 from rich.text import Text
 import webbrowser
 
@@ -31,6 +37,7 @@ from foundry_cli.core.services.runners.tunnel_aware import TunnelAwareRunner
 from foundry_cli.core.util.logger import LogLine, format_log_line
 
 from foundry_cli.release.versioning import get_local_version
+from foundry_cli.release.update_check import check_for_updates
 
 
 def _sanitize_id(name: str) -> str:
@@ -47,7 +54,92 @@ def _sanitize_id(name: str) -> str:
     if result and result[0].isdigit():
         result = f"s-{result}"
     return result or "unknown"
-from foundry_cli.release.update_check import check_for_updates
+
+
+def _win32_set_clipboard(text: str) -> None:
+    """Set CF_UNICODETEXT via the Win32 clipboard API (no subprocess, no BOM)."""
+    import ctypes
+    from ctypes import wintypes
+
+    CF_UNICODETEXT = 13
+    GMEM_MOVEABLE = 0x0002
+
+    kernel32 = ctypes.windll.kernel32
+    user32 = ctypes.windll.user32
+    # 64-bit safety: default ctypes restype is a 32-bit int — pointers truncate.
+    kernel32.GlobalAlloc.restype = wintypes.HGLOBAL
+    kernel32.GlobalAlloc.argtypes = [wintypes.UINT, ctypes.c_size_t]
+    kernel32.GlobalLock.restype = wintypes.LPVOID
+    kernel32.GlobalLock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalUnlock.argtypes = [wintypes.HGLOBAL]
+    kernel32.GlobalFree.argtypes = [wintypes.HGLOBAL]
+    user32.SetClipboardData.restype = wintypes.HANDLE
+    user32.SetClipboardData.argtypes = [wintypes.UINT, wintypes.HANDLE]
+
+    data = text.encode("utf-16-le") + b"\x00\x00"
+    if not user32.OpenClipboard(None):
+        raise OSError("OpenClipboard failed")
+    try:
+        user32.EmptyClipboard()
+        handle = kernel32.GlobalAlloc(GMEM_MOVEABLE, len(data))
+        if not handle:
+            raise OSError("GlobalAlloc failed")
+        locked = kernel32.GlobalLock(handle)
+        if not locked:
+            kernel32.GlobalFree(handle)
+            raise OSError("GlobalLock failed")
+        ctypes.memmove(locked, data, len(data))
+        kernel32.GlobalUnlock(handle)
+        if not user32.SetClipboardData(CF_UNICODETEXT, handle):
+            kernel32.GlobalFree(handle)
+            raise OSError("SetClipboardData failed")
+        # Ownership of the handle passed to the clipboard — do not free it.
+    finally:
+        user32.CloseClipboard()
+
+
+def _copy_text_to_clipboard(text: str) -> str | None:
+    """Copy text to the system clipboard. Returns an error message, or None on success.
+
+    Tries pyperclip if installed, then the platform's native clipboard command.
+    Used instead of Textual's OSC-52 `copy_to_clipboard` because terminal
+    support for OSC-52 is spotty (notably older Windows terminals).
+    """
+    try:
+        import pyperclip  # type: ignore
+
+        pyperclip.copy(text)
+        return None
+    except Exception:
+        pass
+
+    try:
+        if sys.platform == "win32":
+            try:
+                _win32_set_clipboard(text)
+                return None
+            except Exception:
+                # clip.exe fallback: a UTF-16 BOM makes it decode as Unicode
+                # (the BOM lands in the clipboard text — acceptable for a fallback).
+                subprocess.run(["clip"], input=text.encode("utf-16"), check=True)
+                return None
+        if sys.platform == "darwin":
+            subprocess.run(["pbcopy"], input=text.encode("utf-8"), check=True)
+            return None
+        for cmd in (
+            ["wl-copy"],
+            ["xclip", "-selection", "clipboard"],
+            ["xsel", "--clipboard", "--input"],
+        ):
+            try:
+                subprocess.run(cmd, input=text.encode("utf-8"), check=True)
+                return None
+            except (FileNotFoundError, subprocess.CalledProcessError):
+                continue
+        return "no clipboard tool found (install xclip, xsel, or wl-clipboard)"
+    except Exception as e:
+        return str(e)
+
 
 def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
     log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
@@ -61,8 +153,6 @@ def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | No
     else:
         log_list.append(Text.from_markup("[#29B8DB]Run the latest installer from GitHub Releases to upgrade.[/]"))
     log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
-from foundry_cli.release.update_check import check_for_updates
-
 
 
 @dataclass(frozen=True)
@@ -74,62 +164,231 @@ class ServiceRunnerState:
     status_task: asyncio.Task[None]
 
 
-class ServicesFooter(Footer):
-    def _make_key_text(self) -> Text:
-        base_style = self.rich_style
-        text = Text(
-            style=self.rich_style,
-            no_wrap=True,
-            overflow="ellipsis",
-            justify="left",
-            end="",
+# The exact palette Textual 0.56.4's default dark design generated — the look
+# this TUI shipped with. Registered as an explicit theme so the Textual 8.x
+# upgrade (done for built-in mouse text selection) changes ZERO colors.
+_LEGACY_FOOTER_BG = "#0178D4"       # 0.56 $accent (old Footer background)
+_LEGACY_FOOTER_KEY_BG = "#0053AA"   # 0.56 $accent-darken-2 (footer--key)
+FOUNDRY_THEME = Theme(
+    name="foundry",
+    primary=_LEGACY_FOOTER_BG,      # drives block-cursor (ListView highlight) = old $accent
+    secondary="#004578",
+    accent=_LEGACY_FOOTER_BG,       # keep 8.x's orange accent out of scrollbars/focus tints
+    background="#121212",
+    surface="#1E1E1E",
+    panel="#24292F",
+    boost="#FFFFFF0A",
+    dark=True,
+    variables={
+        # The generated default blends the selection tint into the dark
+        # background — the highlight was a near-invisible #094472-ish smudge.
+        # Bright translucent blue; fg transparent keeps each glyph's color.
+        "screen-selection-background": "#3B8EEA 55%",
+        "screen-selection-foreground": "transparent",
+    },
+)
+
+
+class SelectableRichLog(RichLog):
+    """RichLog with SELF-CONTAINED mouse text selection.
+
+    Textual's engine-level selection anchors on per-segment offset meta that
+    proved unreliable in real terminals (VS Code drags fell into the
+    whole-widget fallback: no visible highlight, Ctrl+C copied the whole
+    pane). So this widget owns the whole gesture itself with plain mouse
+    events - the same events that drive clicks and hover, which work
+    everywhere: MouseDown anchors (and captures the mouse), MouseMove
+    extends, MouseUp releases; a plain click clears. The selection is
+    published into screen.selections, so Screen.get_selected_text /
+    clear_selection and Ctrl+C copy keep working unchanged. Highlight is
+    reverse video - an inversion of whatever is underneath.
+
+    Upstream RichLog (Textual 8.2.8) has NO selection support — the compositor
+    anchors a selection on per-segment "offset" style meta, which only widgets
+    rendering Content/Text emit. The plain `Log` widget implements the pattern
+    (`apply_offsets` + `get_selection` + span styling); this ports it onto
+    RichLog's Strip pipeline so click+drag works in the log pane.
+    """
+
+    def get_selection(self, selection: Selection) -> tuple[str, str] | None:
+        text = "\n".join(strip.text for strip in self.lines)
+        return selection.extract(text), "\n"
+
+    def selection_updated(self, selection: Selection | None) -> None:
+        self.refresh()
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._sel_anchor = None  # content-space Offset of mouse-down
+        self._sel_dragging = False
+
+    def _content_offset_at(self, event):
+        from textual.geometry import Offset
+
+        gutter = self.gutter
+        x = max(0, event.x - gutter.left) + self.scroll_offset.x
+        y = max(0, event.y - gutter.top) + self.scroll_offset.y
+        y = min(y, len(self.lines) - 1) if self.lines else 0
+        return Offset(x, y)
+
+    def _publish_selection(self, end) -> None:
+        from textual.geometry import Offset
+
+        # Sort FIRST, then extend the trailing side by one so the characters
+        # under BOTH the anchor and the cursor are included regardless of drag
+        # direction (a naive cursor+1 made backward drags exclusive on both
+        # ends — the last/first char of a line was unreachable).
+        a = self._sel_anchor
+        if (end.y, end.x) < (a.y, a.x):
+            first, last = end, a
+        else:
+            first, last = a, end
+        self.screen.selections = {
+            self: Selection(first, Offset(last.x + 1, last.y))
+        }
+        self.refresh()
+
+    def on_mouse_down(self, event: events.MouseDown) -> None:
+        if event.button not in (0, 1):
+            return
+        self._sel_anchor = self._content_offset_at(event)
+        self._sel_dragging = False
+        self.capture_mouse()
+
+    def on_mouse_move(self, event: events.MouseMove) -> None:
+        if self._sel_anchor is None:
+            return
+        end = self._content_offset_at(event)
+        if not self._sel_dragging and end != self._sel_anchor:
+            self._sel_dragging = True
+        if self._sel_dragging:
+            self._publish_selection(end)
+
+    def on_mouse_up(self, event: events.MouseUp) -> None:
+        self.release_mouse()
+        was_click = self._sel_anchor is not None and not self._sel_dragging
+        self._sel_anchor = None
+        self._sel_dragging = False
+        if was_click and self.screen.selections:
+            self.screen.clear_selection()
+            self.refresh()
+
+    def render_line(self, y: int) -> Strip:
+        scroll_x, scroll_y = self.scroll_offset
+        content_y = scroll_y + y
+        strip = self._render_line(
+            content_y, scroll_x, self.scrollable_content_region.width
         )
-        highlight_style = self.get_component_rich_style("footer--highlight")
-        highlight_key_style = self.get_component_rich_style("footer--highlight-key")
-        key_style = self.get_component_rich_style("footer--key")
-        description_style = self.get_component_rich_style("footer--description")
+        strip = strip.apply_style(self.rich_style)
 
-        bindings = [
-            binding
-            for (_, binding) in self.app.namespace_bindings.values()
-            if binding.show
-        ]
+        selection = self.text_selection
+        if selection is not None:
+            span = selection.get_span(content_y)
+            if span is not None:
+                start, end = span
+                if end == -1:
+                    end = scroll_x + strip.cell_length
+                # Selection span is in content coords; the strip is viewport-local.
+                local_start = max(0, start - scroll_x)
+                local_end = max(0, min(strip.cell_length, end - scroll_x))
+                if local_end > local_start:
+                    left, middle, right = strip.divide(
+                        [local_start, local_end, strip.cell_length]
+                    )
+                    strip = Strip.join([left, self._highlight(middle), right])
+        return strip
 
-        action_to_bindings = defaultdict(list)
-        for binding in bindings:
-            action_to_bindings[binding.action].append(binding)
+    _HL_BLUE = (59, 142, 234)  # #3B8EEA
+    _HL_ALPHA = 0.45
 
-        preferred_actions = ["request_quit", "toggle_fullscreen"]
-        ordered_actions = [
-            *[action for action in preferred_actions if action in action_to_bindings],
-            *[
-                action
-                for action in action_to_bindings.keys()
-                if action not in preferred_actions
-            ],
-        ]
+    def _highlight(self, piece: Strip) -> Strip:
+        """Selection paint.
 
-        for action in ordered_actions:
-            binding = action_to_bindings[action][0]
-            if binding.key_display is None:
-                key_display = self.app.get_key_display(binding.key)
-                if key_display is None:
-                    key_display = binding.key.upper()
-            else:
-                key_display = binding.key_display
-            hovered = self.highlight_key == binding.key
-            key_text = Text.assemble(
-                (f" {key_display} ", highlight_key_style if hovered else key_style),
-                (
-                    f" {binding.description} ",
-                    highlight_style if hovered else base_style + description_style,
-                ),
-                meta={
-                    "@click": f"app.check_bindings('{binding.key}')",
-                    "key": binding.key,
-                },
+        Truecolor terminals: translucent blue blended per-cell over each
+        segment's real background (terminals have no opacity — the blend IS
+        the translucency). Anything less capable falls back to reverse
+        video so the selection stays usable.
+        """
+        from rich.color import Color as RichColor, ColorType, blend_rgb
+        from rich.color_triplet import ColorTriplet
+        from rich.segment import Segment
+        from rich.style import Style as _RichStyle
+
+        if self.app.console.color_system != "truecolor":
+            return piece.apply_style(_RichStyle(reverse=True))
+
+        try:
+            base_bg = self.background_colors[1].rich_color.get_truecolor()
+        except Exception:
+            base_bg = ColorTriplet(18, 18, 18)
+        blue = ColorTriplet(*self._HL_BLUE)
+
+        segments = []
+        for text, style, _ in piece:
+            bg = None
+            if style is not None and style.bgcolor is not None:
+                try:
+                    bg = style.bgcolor.get_truecolor()
+                except Exception:
+                    bg = None
+            blended = blend_rgb(bg or base_bg, blue, self._HL_ALPHA)
+            overlay = _RichStyle(
+                bgcolor=RichColor(blended.hex, ColorType.TRUECOLOR, triplet=blended)
             )
-            text.append_text(key_text)
+            segments.append(Segment(text, (style + overlay) if style else overlay))
+        return Strip(segments, piece.cell_length)
+
+
+class SidebarLabel(Label):
+    """Sidebar text is NOT selectable.
+
+    With the sidebar selectable, any drag whose anchor the terminal fails to
+    resolve fell back to the engine's whole-widget walk and lit up the
+    SIDEBAR — the exact opposite of selecting log text. With these opted
+    out, the log pane is the only selection target.
+    """
+
+    ALLOW_SELECT = False
+
+
+class ServicesFooter(Static):
+    """Pre-0.63-style one-line key footer, rendered as a single Text.
+
+    Textual >=0.63 rewrote Footer into composed FooterKey widgets with a
+    different look; this keeps the original bar (keys bold on darker blue,
+    descriptions on the accent bar) byte-identical through the 8.x upgrade.
+    """
+
+    DEFAULT_CSS = """
+    ServicesFooter {
+        dock: bottom;
+        height: 1;
+        background: #0178D4;
+        color: #DDE6ED;
+        text-style: bold;
+        /* The @click meta marks each entry as a "link"; the theme default
+           link-style is underline — the old footer had none. Hover colors
+           reproduce 0.56's footer--highlight. */
+        link-style: bold;
+        link-style-hover: bold;
+        link-color-hover: #FFFFFF;
+        link-background-hover: #0065BE;
+    }
+    """
+
+    def render(self) -> Text:
+        text = Text(no_wrap=True, overflow="ellipsis", justify="left", end="")
+        for binding in self.app.BINDINGS:
+            if not isinstance(binding, Binding) or not binding.show:
+                continue
+            key_display = binding.key_display or binding.key.upper()
+            text.append_text(
+                Text.assemble(
+                    (f" {key_display} ", f"bold #FFFFFF on {_LEGACY_FOOTER_KEY_BG}"),
+                    (f" {binding.description} ", f"bold #DDE6ED on {_LEGACY_FOOTER_BG}"),
+                    meta={"@click": f"app.footer_press('{binding.key}')"},
+                )
+            )
         return text
 
 
@@ -185,8 +444,9 @@ class ServicesUI(App[None]):
         height: 1fr;
     }
 
-    /* Reduce "cursor" artifacts: keep list highlight on the row, not on sub-widgets. */
-    #services:focus .listview--highlight {
+    /* Reduce "cursor" artifacts: keep list highlight on the row, not on sub-widgets.
+       (Textual >=0.63 renamed the highlight class to ListItem.-highlight.) */
+    #services > ListItem.-highlight {
         text-style: none;
     }
 
@@ -230,24 +490,33 @@ class ServicesUI(App[None]):
         scrollbar-size-horizontal: 0;
     }
 
-    Footer {
-        text-style: bold;
-        content-align: center middle;
-    }
     """
 
-    BINDINGS = [
-        Binding("ctrl+c", "request_quit", "Quit", priority=True),
+    # 0.56 had no command palette; keep ctrl+p free of surprise UI.
+    ENABLE_COMMAND_PALETTE = False
 
-        # Navigation / focus
+    # Engine-level text selection OFF: its terminal-dependent anchoring was
+    # unreliable (whole-widget fallback). SelectableRichLog owns selection.
+    ALLOW_SELECT = False
+
+    BINDINGS = [
+        # Esc quits so Ctrl+C is free for the universal "copy selection".
+        Binding("escape", "request_quit", "Quit", priority=True, key_display="ESC"),
+        Binding("ctrl+c", "copy_selection", "Copy", priority=True),
+
+        # Navigation / focus: pure arrow-key flow — → into the log, ← back to
+        # the sidebar (priority so it beats the log's own horizontal scroll).
         Binding("right", "interact", "Interact", show=False),
-        Binding("escape", "unfocus", "Exit", show=False),
+        Binding("left", "unfocus", "Back", show=False, priority=True),
 
         # Layout
         Binding("tab", "toggle_fullscreen", "Toggle Sidebar", priority=True),
 
         # Service control
         Binding("r", "restart", "Restart"),
+
+        # Log export
+        Binding("e", "export_log", "Export Log"),
 
         # Log scrolling (when log is focused)
         Binding("u", "log_line_up", "Scroll Up"),
@@ -268,6 +537,10 @@ class ServicesUI(App[None]):
         debug: bool = False,
     ) -> None:
         super().__init__()
+        # Pin the exact 0.56-era palette (see FOUNDRY_THEME) — the Textual 8.x
+        # default themes would silently recolor the whole UI.
+        self.register_theme(FOUNDRY_THEME)
+        self.theme = "foundry"
         self._services = services
         self._provided_runners = runners
         self._debug = debug
@@ -313,23 +586,26 @@ class ServicesUI(App[None]):
         self._spinner_index: int = 0
         self._sidebar_visible: bool = True
 
+        # Memoized update-check result (network call — once per session, not per service)
+        self._update_info: Optional[tuple[str, Optional[str], Optional[str]]] = None
+
     def compose(self) -> ComposeResult:
         with Horizontal():
             with Vertical(id="sidebar"):
-                yield Label("Services", id="sidebar_title")
-                yield Label("↑/↓ Select • → to Interact", id="sidebar_hint")
+                yield SidebarLabel("Services", id="sidebar_title")
+                yield SidebarLabel("↑/↓ Select • → to Interact", id="sidebar_hint")
                 items = []
                 for svc in self._services:
                     safe_id = f"svc-{_sanitize_id(svc.name)}"
                     display_name = self._display_names.get(svc.name, svc.name)
                     row = Horizontal(
-                        Label("", id=f"icon-{safe_id}", classes="svc_icon"),
-                        Label(display_name, id=f"name-{safe_id}", classes="svc_name"),
+                        SidebarLabel("", id=f"icon-{safe_id}", classes="svc_icon"),
+                        SidebarLabel(display_name, id=f"name-{safe_id}", classes="svc_name"),
                         classes="svc_row"
                     )
                     items.append(ListItem(row, id=safe_id, name=svc.name))
                 yield ListView(*items, id="services")
-            yield RichLog(id="log", highlight=False, markup=False, wrap=True)
+            yield SelectableRichLog(id="log", highlight=False, markup=False, wrap=True)
         yield ServicesFooter()
 
 
@@ -347,27 +623,17 @@ class ServicesUI(App[None]):
             icon_lbl.update(frame)
             icon_lbl.styles.color = "#F5F536" if is_selected else "#3B8EEA"
         elif st == ServiceStatus.healthy:
-            icon_lbl.update(" ✔︎" if self._is_vscode else "[OK]")
+            # Plain U+2713/U+2717 — the U+FE0E variation-selector forms
+            # (✔︎/✘︎) render wider than they measure in some terminals
+            # (VS Code) and clip in the 5-cell icon column.
+            icon_lbl.update(" ✓" if self._is_vscode else "[OK]")
             icon_lbl.styles.color = "#23D18B"
         elif st == ServiceStatus.failed:
-            icon_lbl.update(" ✘︎" if self._is_vscode else "[X]")
+            icon_lbl.update(" ✗" if self._is_vscode else "[X]")
             icon_lbl.styles.color = "#F14C4C"
         else:
             icon_lbl.update("?")
             icon_lbl.styles.color = "#888888"
-
-    def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | None) -> None:
-        log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
-        line = (
-            Text.from_markup("[magenta bold]Update available: [/]" +
-                f"[red bold]{local}[/][yellow bold] → [/][green bold]{latest}[/]")
-        )
-        log_list.append(line)
-        if url:
-            log_list.append(Text.from_markup(f"[cyan]Download: {url}[/]"))
-        else:
-            log_list.append(Text.from_markup("[cyan]Run the latest installer from GitHub Releases to upgrade.[/]"))
-        log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
 
     def _write_banner_to_service(self, service_name: str) -> None:
         """Write the Foundry ASCII banner and update banner to a service's log buffer."""
@@ -386,6 +652,8 @@ class ServicesUI(App[None]):
             "",
             f"[#3B8EEA bold]                         v{version}[/]",
             "",
+            "[#888888]Select text: click+drag, then Ctrl+C to copy  -  'e' exports the whole log[/]",
+            "",
         ]
 
         log_list = self._logs.setdefault(service_name, [])
@@ -393,8 +661,10 @@ class ServicesUI(App[None]):
             styled = Text.from_markup(line)
             log_list.append(styled)
 
-        # Check for updates and print update banner if needed
-        local, latest, url = check_for_updates()
+        # Check for updates once per session; reuse the result for every service
+        if self._update_info is None:
+            self._update_info = check_for_updates()
+        local, latest, url = self._update_info
         if latest:
             _print_update_banner_to_log(log_list, local, latest, url)
 
@@ -444,6 +714,18 @@ class ServicesUI(App[None]):
         self.set_interval(0.15, self._tick_spinner)
         self._ansi_decoder = AnsiDecoder()
 
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Re-wrap the log buffer at the new width.
+
+        RichLog wraps content at WRITE time, so a terminal resize leaves old
+        lines wrapped for the previous width. Debounced — VS Code fires a
+        stream of resize events during a drag.
+        """
+        timer = getattr(self, "_resize_rewrap_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._resize_rewrap_timer = self.set_timer(0.2, self._render_selected)
 
     def _tick_spinner(self) -> None:
         self._spinner_index += 1
@@ -580,15 +862,49 @@ class ServicesUI(App[None]):
                 return
 
     async def on_event(self, event: events.Event) -> None:
-        """Drop non-left-click mouse events and paste events before dispatch.
+        """Drop right/middle-click mouse events and paste events before dispatch.
 
         Right/middle-click in some terminals (e.g. VS Code) can trigger
         @click meta actions on the footer or paste clipboard text, which
         would inadvertently fire key-bound actions like restart.
+
+        Deliberately allows button 0 as well as 1: real terminal drivers can
+        report 0 where the test harness reports 1 — swallowing those killed
+        the events text selection depends on.
         """
         if isinstance(event, (events.MouseDown, events.MouseUp, events.Click)):
-            if event.button != 1:
-                return  # swallow the event entirely
+            if event.button not in (0, 1):
+                return  # swallow right/middle click entirely
+            if os.environ.get("FOUNDRY_TUI_DEBUG_MOUSE"):
+                try:
+                    w, off = self.screen.get_widget_and_offset_at(
+                        event.screen_x, event.screen_y
+                    )
+                    self._notify_selected(
+                        "DEBUG",
+                        f"mouse {type(event).__name__} btn={event.button} "
+                        f"screen=({event.screen_x},{event.screen_y}) "
+                        f"widget={type(w).__name__ if w else None} offset={off} "
+                        f"captured={self.mouse_captured!r}",
+                    )
+                except Exception as e:
+                    self._notify_selected("DEBUG", f"mouse diag failed: {e}")
+        elif (
+            isinstance(event, events.MouseMove)
+            and event.button
+            and os.environ.get("FOUNDRY_TUI_DEBUG_MOUSE")
+        ):
+            try:
+                w, off = self.screen.get_widget_and_offset_at(
+                    event.screen_x, event.screen_y
+                )
+                self._notify_selected(
+                    "DEBUG",
+                    f"drag btn={event.button} screen=({event.screen_x},{event.screen_y}) "
+                    f"widget={type(w).__name__ if w else None} offset={off}",
+                )
+            except Exception as e:
+                self._notify_selected("DEBUG", f"drag diag failed: {e}")
         if isinstance(event, events.Paste):
             return  # swallow paste — no paste target in this TUI
         await super().on_event(event)
@@ -628,7 +944,7 @@ class ServicesUI(App[None]):
         self.query_one("#log", RichLog).focus()
 
         try:
-            self.query_one("#sidebar_hint", Label).update("[Esc] to Change Service")
+            self.query_one("#sidebar_hint", Label).update("← to Change Service")
         except NoMatches:
             pass
 
@@ -688,6 +1004,71 @@ class ServicesUI(App[None]):
     def action_log_fast_right(self) -> None:
         log = self.query_one("#log", RichLog)
         log.scroll_to(x=log.scroll_x + 4)
+
+    def _selected_log_text(self) -> Optional[str]:
+        """Plain-text dump of the selected service's log buffer."""
+        if not self._selected:
+            return None
+        lines = self._logs.get(self._selected)
+        if not lines:
+            return None
+        return "\n".join(t.plain for t in lines)
+
+    def _notify_selected(self, level: str, message: str) -> None:
+        """Append a status line to the selected service's log buffer + pane."""
+        line = format_log_line(
+            LogLine(timestamp=datetime.now(), level=level, message=escape(message))
+        )
+        styled = Text.from_markup(line)
+        if self._selected:
+            self._logs.setdefault(self._selected, []).append(styled)
+        try:
+            self.query_one("#log", RichLog).write(styled)
+        except NoMatches:
+            pass
+
+    def action_footer_press(self, key: str) -> None:
+        """Run the action bound to `key` (footer @click)."""
+        for binding in self.BINDINGS:
+            if isinstance(binding, Binding) and binding.key == key:
+                self.call_later(self.run_action, binding.action)
+                return
+
+    def action_copy_selection(self) -> None:
+        """Copy the mouse-selected text to the clipboard (Ctrl+C)."""
+        selection = None
+        try:
+            selection = self.screen.get_selected_text()
+        except Exception:
+            pass
+        if not selection:
+            self._notify_selected(
+                "INFO", "Nothing selected — click+drag in the log, then Ctrl+C"
+            )
+            return
+        err = _copy_text_to_clipboard(selection)
+        if err is None:
+            if self._debug:
+                count = selection.count("\n") + 1
+                self._notify_selected("DEBUG", f"Copied selection ({count} lines) to clipboard")
+            self.screen.clear_selection()
+        else:
+            self._notify_selected("ERROR", f"Clipboard copy failed: {err}")
+
+    def action_export_log(self) -> None:
+        """Write the selected service's log to ~/.foundry/logs/ ('e')."""
+        text = self._selected_log_text()
+        if text is None or not self._selected:
+            return
+        try:
+            logs_dir = Path.home() / ".foundry" / "logs"
+            logs_dir.mkdir(parents=True, exist_ok=True)
+            stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+            out = logs_dir / f"{_sanitize_id(self._selected)}-{stamp}.log"
+            out.write_text(text + "\n", encoding="utf-8")
+            self._notify_selected("INFO", f"Log exported: {out}")
+        except Exception as e:
+            self._notify_selected("ERROR", f"Log export failed: {e}")
 
     def action_log_top(self) -> None:
         self.query_one("#log", RichLog).scroll_to(y=0, animate=False)

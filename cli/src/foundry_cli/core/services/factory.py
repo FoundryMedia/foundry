@@ -27,10 +27,35 @@ class _UnsupportedServiceRunner(ServiceRunner):
         return _empty()
 
 
-def create_runner(service: DiscoveredService, *, debug: bool = False, command: str = "dev", migrate_db: bool = False):
+def create_runner(
+    service: DiscoveredService,
+    *,
+    debug: bool = False,
+    command: str = "dev",
+    migrate_db: bool = False,
+    workspace_root: Path | None = None,
+):
+    # Resolve the workspace/repo root once, up front (prefer the caller-provided
+    # one; fall back to walking up from the service for its owning manifest).
+    resolved_root = workspace_root
+    if resolved_root is None:
+        from foundry_cli.core.project.workspace import service_repo_root
+
+        resolved_root = service_repo_root(service.path)
+
+    injected_env_keys: tuple[str, ...] = ()
+    dev_mode: str | None = None
+    if command == "dev" and resolved_root is not None:
+        # Resolve the service's dev target (prod-tunnel vs full-local) from its
+        # env stack BEFORE constructing runners — the tunnel and injected
+        # credentials depend on it. See core/project/dev_env.py.
+        from foundry_cli.core.project.dev_env import prepare_service_for_dev
+
+        service, dev_mode, injected_env_keys = prepare_service_for_dev(service, resolved_root)
+
     rt = service.runtime.runtime
     cfg = service.config
-    
+
     runner: ServiceRunner
 
     strict_health_ports = False
@@ -56,13 +81,14 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
             debug_config=cfg.debug,
         )
 
-    # Next.js
-    elif rt == ServiceRuntime.nextjs:
+    # Node dev servers (Next.js, Vite — incl. a Tauri shell via run.script)
+    elif rt in (ServiceRuntime.nextjs, ServiceRuntime.vite):
         runner = NodeServiceRunner(
             service,
             debug=debug,
             port=cfg.port,
             command=command,
+            script=cfg.script,
             args=cfg.args,
             env=cfg.env,
         )
@@ -90,35 +116,23 @@ def create_runner(service: DiscoveredService, *, debug: bool = False, command: s
         # Determine tunnel local port for host override
         tunnel_local_port = cfg.ssh_tunnel.local_port if cfg.ssh_tunnel else None
 
-        # Get workspace root for resolving relative paths
-        workspace_root = service.path
-        while workspace_root.parent != workspace_root:
-            if (workspace_root / "foundry.json").exists():
-                break
-            workspace_root = workspace_root.parent
-
         runner = MigrationAwareRunner(
             inner_runner=runner,
             db_config=db_cfg,
-            workspace_root=workspace_root if (workspace_root / "foundry.json").exists() else service.path,
+            workspace_root=resolved_root or service.path,
             tunnel_local_port=tunnel_local_port,
         )
 
-    # Wrap with tunnel support if configured
+    # Wrap with tunnel support if configured (dev_env strips the tunnel for
+    # local-target services, so reaching here in dev means prod target).
     if cfg.ssh_tunnel is not None:
-        # Get workspace root from service path (go up to find foundry.json)
-        workspace_root = service.path
-        while workspace_root.parent != workspace_root:
-            if (workspace_root / "foundry.json").exists():
-                break
-            workspace_root = workspace_root.parent
-        
         runner = TunnelAwareRunner(
             inner_runner=runner,
             tunnel_config=cfg.ssh_tunnel,
-            workspace_root=workspace_root if (workspace_root / "foundry.json").exists() else None,
+            workspace_root=resolved_root,
+            injected_env_keys=injected_env_keys,
         )
-    
+
     return runner
 
 
