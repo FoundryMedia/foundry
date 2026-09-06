@@ -288,18 +288,20 @@ class NodeServiceRunner(ProcessBackedRunner):
             return None
 
     async def _wait_for_ready(self, proc) -> None:
-        """Wait for ready signal from stdout or port availability as fallback."""
-        host = "127.0.0.1"
+        """Wait for ready signal from stdout, or port availability as fallback."""
         port = self._port
-        
-        # Primary: wait for "Ready" message in stdout (set by log watcher)
-        # Secondary: poll for port as fallback
+
         while True:
             if proc.returncode is not None:
                 return  # Process exited, monitor handles status
-            
-            # Check if ready event was set by log watcher
-            if self._ready_event.is_set():
+
+            # Primary: ready pattern seen in the output (set by the log watcher).
+            # Fallback: the port actually accepting connections — the comment
+            # used to promise this but no polling existed, so any pattern miss
+            # meant a guaranteed timeout.
+            if self._ready_event.is_set() or (
+                port is not None and self._is_port_open(port)
+            ):
                 await self._status_queue.put(
                     ServiceStatusEvent(
                         self.name, ServiceStatus.healthy,
@@ -329,11 +331,33 @@ class NodeServiceRunner(ProcessBackedRunner):
 
             await asyncio.sleep(0.25)
 
+    _ANSI_ESCAPE = re.compile(r"\x1b\[[0-9;?]*[ -/]*[@-~]")
+
     def _check_ready_pattern(self, line: str) -> bool:
-        """Check if a log line matches any ready pattern."""
+        """Check if a log line matches any ready pattern.
+
+        Matched against the ANSI-stripped line: Vite colorizes its output even
+        when piped, and the escape codes land between "ready in"/"Local:" and
+        the rest of the phrase — every pattern silently missed and the web
+        service failed its 90s readiness wait while serving fine on :1420.
+        """
+        plain = self._ANSI_ESCAPE.sub("", line)
         for pattern in self.READY_PATTERNS:
-            if pattern.search(line):
+            if pattern.search(plain):
                 return True
+        return False
+
+    @staticmethod
+    def _is_port_open(port: int) -> bool:
+        """True if something accepts connections on the port (v4 or v6 loopback)."""
+        import socket
+
+        for host in ("127.0.0.1", "::1"):
+            try:
+                with socket.create_connection((host, port), timeout=0.25):
+                    return True
+            except OSError:
+                continue
         return False
 
     def events(self):

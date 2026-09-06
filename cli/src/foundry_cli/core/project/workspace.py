@@ -671,9 +671,12 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
             resolve_services_root(manifest)
         services_root = workspace_root
         # Let Node-package discovery resolve manifest keys too (e.g. the dir
-        # `app` carrying the manifest service `web`).
+        # `app` carrying the manifest service `web`). A service at the repo
+        # ROOT (path ".") has no path segment — key it by the repo dir name
+        # (foundry-hub's `hub` service) or Node discovery would synthesize a
+        # duplicate under the package.json name.
         for svc_name, svc_cfg in manifest.services_config.items():
-            dir_name = Path(svc_cfg.effective_path).name
+            dir_name = Path(svc_cfg.effective_path).name or workspace_root.name
             path_to_key.setdefault(dir_name, svc_name)
     
     # Filter to only non-Node services (Spring Boot, FastAPI)

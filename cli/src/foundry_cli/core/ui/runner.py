@@ -179,6 +179,13 @@ FOUNDRY_THEME = Theme(
     panel="#24292F",
     boost="#FFFFFF0A",
     dark=True,
+    variables={
+        # The generated default blends the selection tint into the dark
+        # background — the highlight was a near-invisible #094472-ish smudge.
+        # Bright translucent blue; fg transparent keeps each glyph's color.
+        "screen-selection-background": "#3B8EEA 55%",
+        "screen-selection-foreground": "transparent",
+    },
 )
 
 
@@ -586,6 +593,18 @@ class ServicesUI(App[None]):
         self.set_interval(0.15, self._tick_spinner)
         self._ansi_decoder = AnsiDecoder()
 
+
+    def on_resize(self, event: events.Resize) -> None:
+        """Re-wrap the log buffer at the new width.
+
+        RichLog wraps content at WRITE time, so a terminal resize leaves old
+        lines wrapped for the previous width. Debounced — VS Code fires a
+        stream of resize events during a drag.
+        """
+        timer = getattr(self, "_resize_rewrap_timer", None)
+        if timer is not None:
+            timer.stop()
+        self._resize_rewrap_timer = self.set_timer(0.2, self._render_selected)
 
     def _tick_spinner(self) -> None:
         self._spinner_index += 1
