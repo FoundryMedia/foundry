@@ -252,7 +252,7 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
     #    assembles + signs the index server-side from the uploaded release doc.)
     root_bytes = sig_text = None
     if not managed:
-        existing = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+        existing = fm.fetch_index(f"{fid.CDN_BASE}/publishers/{publisher}/games/{slug}")
         if existing:
             try:
                 fm.assert_coherent(existing)
@@ -310,7 +310,7 @@ def fcm_releases() -> None:
     cfg = _load_publisher_config()
     slug = (cfg.get("gameId") or "").strip().lower()
     publisher = (cfg.get("publisher") or "").strip().lower()
-    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    index = fm.fetch_index(f"{fid.CDN_BASE}/publishers/{publisher}/games/{slug}")
     if not index:
         raise click.ClickException(f"No published index found for {publisher}/{slug}.")
     channels = index.get("channels") or {}
@@ -363,7 +363,7 @@ def channel_set(channel_name, version, managed) -> None:
         raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
     _guard_byo_signer(publisher, slug, key)
 
-    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    index = fm.fetch_index(f"{fid.CDN_BASE}/publishers/{publisher}/games/{slug}")
     if not index:
         raise click.ClickException(f"No published index found for {publisher}/{slug}.")
     try:
@@ -436,7 +436,7 @@ def channel_unset(channel_name, game, managed) -> None:
         raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
     _guard_byo_signer(publisher, slug, key)
 
-    index = fm.fetch_index(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    index = fm.fetch_index(f"{fid.CDN_BASE}/publishers/{publisher}/games/{slug}")
     if not index:
         raise click.ClickException(f"No published index found for {publisher}/{slug}.")
     try:
@@ -499,7 +499,7 @@ def _guard_byo_signer(publisher: str, slug: str, key: dict) -> None:
     a retired BYO key re-signed a managed game's index and the launcher went dark.
     """
     from foundry_cli.core import minisign, fcm_manifest as fm
-    sig = fm.fetch_index_sig(f"https://cdn.foundryplatform.app/publishers/{publisher}/games/{slug}")
+    sig = fm.fetch_index_sig(f"{fid.CDN_BASE}/publishers/{publisher}/games/{slug}")
     if not sig:
         return  # first publish / sig unreachable - nothing to compare against
     live = minisign.sig_key_id(sig)
@@ -583,6 +583,6 @@ def submit(build_id, ack) -> None:
     """
     raise click.ClickException(
         "Publishing review moved to the web console (it's a billed action that needs an explicit "
-        "checkout). Open your game at https://foundryplatform.app/console and use 'Submit for review'. "
+        f"checkout). Open your game at {fid.CONSOLE_BASE} and use 'Submit for review'. "
         "The CLI cannot submit for publishing."
     )

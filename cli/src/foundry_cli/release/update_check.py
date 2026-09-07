@@ -14,6 +14,10 @@ from foundry_cli.release.versioning import get_local_version
 LATEST_URL = "https://api.github.com/repos/FoundryMedia/foundry/releases/latest"
 CACHE_TTL_SECONDS = 6 * 60 * 60  # 6 hours
 
+# Set FOUNDRY_NO_UPDATE_CHECK=1 to silence the check entirely (CI, or another
+# org consuming the CLI that doesn't want banners pointing at our releases).
+_OPT_OUT_ENV = "FOUNDRY_NO_UPDATE_CHECK"
+
 _SEMVER_RE = re.compile(r"^\s*v?(\d+)\.(\d+)\.(\d+)(?:[-+].*)?\s*$")
 
 
@@ -25,8 +29,13 @@ def _parse_semver(v: str) -> tuple[int, int, int] | None:
 
 
 def _cache_file() -> Path:
-    root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA") or os.getcwd()
-    return Path(root) / "Foundry" / "cache" / "update_check.json"
+    # Windows: LOCALAPPDATA. Elsewhere (macOS/Linux): ~/.foundry/cache —
+    # never the CWD (that would scatter cache files into whatever repo the
+    # user is standing in).
+    root = os.environ.get("LOCALAPPDATA") or os.environ.get("APPDATA")
+    if root:
+        return Path(root) / "Foundry" / "cache" / "update_check.json"
+    return Path.home() / ".foundry" / "cache" / "update_check.json"
 
 
 def _read_cache(path: Path) -> dict | None:
@@ -82,6 +91,9 @@ def _fetch_latest_release() -> dict | None:
 def check_for_updates() -> tuple[str, str | None, str | None]:
     """Return (local_version, latest_version_or_none, url_or_none)."""
     local = get_local_version()
+
+    if os.environ.get(_OPT_OUT_ENV, "").strip().lower() in ("1", "true", "yes"):
+        return local, None, None
 
     cache_path = _cache_file()
     cached = _read_cache(cache_path)

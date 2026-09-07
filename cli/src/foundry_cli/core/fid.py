@@ -8,7 +8,9 @@ Both speak the JsonApiResponse envelope ``{"data": ..., "errors": [{code,message
 helpers below unwrap ``data`` and raise :class:`FoundryError` (with the server's message) on
 failure. Presigned R2 PUTs are plain (no auth, no envelope) and stream from disk.
 
-Override the hosts with FOUNDRY_AUTH_BASE / FOUNDRY_API_BASE (local dev).
+Override the hosts with FOUNDRY_AUTH_BASE / FOUNDRY_API_BASE (local dev);
+FOUNDRY_CDN_BASE / FOUNDRY_CONSOLE_BASE cover the published-content CDN and
+the web console the same way (another org points all four at its own hosts).
 """
 
 from __future__ import annotations
@@ -23,6 +25,8 @@ from foundry_cli.core.errors import FoundryError
 
 AUTH_BASE = os.environ.get("FOUNDRY_AUTH_BASE", "https://auth.foundryplatform.app")
 API_BASE = os.environ.get("FOUNDRY_API_BASE", "https://api.foundryplatform.app")
+CDN_BASE = os.environ.get("FOUNDRY_CDN_BASE", "https://cdn.foundryplatform.app").rstrip("/")
+CONSOLE_BASE = os.environ.get("FOUNDRY_CONSOLE_BASE", "https://foundryplatform.app/console").rstrip("/")
 _UA = "foundry-cli"
 
 

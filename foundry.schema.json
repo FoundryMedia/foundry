@@ -8,11 +8,8 @@
   "schemaVersion": "0.7.0",
 
   "required": [
-    "$schema",
     "schemaVersion",
     "name",
-    "repository",
-    "ci",
     "services"
   ],
 
@@ -606,6 +603,31 @@
           "description": "How the service behaves with 'foundry run'. Defines ports, arguments, health checks, and environment variables for local development.",
           "$ref": "#/definitions/runConfig"
         },
+        "enabled": {
+          "description": "Whether the service participates in 'foundry run'. Disabled services stay declared but are not started.",
+          "type": "boolean",
+          "default": true
+        },
+        "sshTunnel": {
+          "description": "SSH tunnel opened before the service starts in prod-target dev (e.g. to a private RDS through a bastion). See runConfig/dev-env docs for target resolution.",
+          "$ref": "#/definitions/sshTunnelConfig"
+        },
+        "sidecars": {
+          "description": "Local sidecar processes started alongside the service by 'foundry run' (e.g. OpenFGA, Redis). Keys are sidecar names.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/localSidecarConfig" }
+        },
+        "devProdGuard": {
+          "description": "Env vars injected ONLY when the service runs locally against the prod target — safety overrides (e.g. disabling schedulers) that must never apply in real deployments.",
+          "type": "object",
+          "properties": {
+            "env": {
+              "type": "object",
+              "additionalProperties": { "type": "string" }
+            }
+          },
+          "additionalProperties": false
+        },
         "database": {
           "description": "Database this service uses. An inline config object (engine, changelog, properties) or a string referencing a key in the top-level 'databases' map (deprecated).",
           "oneOf": [
@@ -690,8 +712,141 @@
           "additionalProperties": { "type": "string" }
         },
         "healthCheck": {
-          "description": "Health check endpoint path for local development (e.g., '/actuator/health').",
+          "description": "Health check endpoint for local development. Object form is what 'foundry run' consumes ({path, port?, expectedStatus?}); the bare-string form is legacy and ignored by the runner.",
+          "oneOf": [
+            { "type": "string" },
+            {
+              "type": "object",
+              "required": ["path"],
+              "properties": {
+                "path": { "type": "string" },
+                "port": { "type": "integer" },
+                "expectedStatus": { "type": "integer", "default": 200 }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "script": {
+          "description": "Explicit start command for local development, overriding the framework's default runner.",
           "type": "string"
+        },
+        "debug": {
+          "description": "Remote-debugger attachment for local development: a port number, or {port, suspend?} (JDWP for Java, --inspect for Node).",
+          "oneOf": [
+            { "type": "integer" },
+            {
+              "type": "object",
+              "required": ["port"],
+              "properties": {
+                "port": { "type": "integer" },
+                "suspend": { "type": "boolean", "default": false }
+              },
+              "additionalProperties": false
+            }
+          ]
+        },
+        "strictMode": {
+          "description": "Strict-mode behavior for 'foundry run': a boolean, or {enabled?, strictHealthPorts?}.",
+          "oneOf": [
+            { "type": "boolean" },
+            {
+              "type": "object",
+              "properties": {
+                "enabled": { "type": "boolean" },
+                "strictHealthPorts": { "type": "boolean" }
+              },
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "sshTunnelConfig": {
+      "type": "object",
+      "description": "SSH port-forward opened before a service starts in prod-target local dev. String values support ${VAR} environment expansion.",
+      "required": ["localPort", "remoteHost", "remotePort", "host"],
+      "properties": {
+        "localPort": {
+          "description": "Local port the tunnel listens on (what the service's DB config points at).",
+          "type": "integer"
+        },
+        "remoteHost": {
+          "description": "Destination host as seen FROM the bastion (e.g. the private RDS endpoint). Supports ${VAR}.",
+          "type": "string"
+        },
+        "remotePort": {
+          "description": "Destination port (e.g. 5432).",
+          "type": "integer"
+        },
+        "host": {
+          "description": "Bastion host/IP to SSH through. Supports ${VAR}; when unset/unresolved, 'bastionTag' resolves it by EC2 Name tag.",
+          "type": "string"
+        },
+        "user": {
+          "description": "SSH user on the bastion.",
+          "type": "string",
+          "default": "ec2-user"
+        },
+        "password": {
+          "description": "Path to the SSH private key file (relative paths resolve against the service's repo root). Auto-fetched from 'keySecret' when missing. Keep it git-ignored — the CLI ensures an ignore entry when it writes the key.",
+          "type": "string"
+        },
+        "bastionTag": {
+          "description": "EC2 tag:Name used to resolve the bastion's public IP when 'host' is unset or its ${VAR} is unresolved.",
+          "type": "string"
+        },
+        "keySecret": {
+          "description": "AWS Secrets Manager secret id holding the SSH key (JSON field 'private_key_pem'), fetched into 'password''s path when the file is missing.",
+          "type": "string"
+        },
+        "credentialsSecret": {
+          "description": "AWS Secrets Manager secret id with DB credentials injected as env into the service process (never written to disk).",
+          "type": "string"
+        },
+        "injectEnv": {
+          "description": "Override/extend the injected credential env-var mapping: ENV_VAR -> secret field (e.g. {\"PGUSER\": \"username\"}).",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "awsRegion": {
+          "description": "Region for the bastion lookup and secret fetches.",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false
+    },
+
+    "localSidecarConfig": {
+      "type": "object",
+      "description": "A local sidecar process 'foundry run' starts alongside the service (e.g. OpenFGA, Redis via docker).",
+      "required": ["command"],
+      "properties": {
+        "command": { "type": "string" },
+        "args": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "cwd": {
+          "description": "Working directory, relative to the manifest directory.",
+          "type": "string"
+        },
+        "port": { "type": "integer" },
+        "env": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "enabled": { "type": "boolean", "default": true },
+        "healthPath": {
+          "description": "HTTP health endpoint (e.g. '/health') polled for readiness.",
+          "type": "string"
+        },
+        "readyPatterns": {
+          "description": "Log substrings indicating the sidecar is ready.",
+          "type": "array",
+          "items": { "type": "string" }
         }
       },
       "additionalProperties": false
