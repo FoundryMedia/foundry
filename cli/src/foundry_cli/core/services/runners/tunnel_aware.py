@@ -161,7 +161,12 @@ class TunnelAwareRunner(ServiceRunner):
                 ServiceStatusEvent(
                     self.name, ServiceStatus.failed,
                     detail=f"SSH tunnel(s) failed: {', '.join(failed)}",
-                    error="Cannot start service without all tunnels. Check SSH config, key file, and network.",
+                    error=(
+                        "Cannot start service without all tunnels. See the "
+                        f"[tunnel:{'|'.join(failed)}] error above — check the "
+                        "bastion host, SSH auth (key file or ssh-agent), the "
+                        "remote host/port, and the network."
+                    ),
                     level="ERROR",
                 )
             )

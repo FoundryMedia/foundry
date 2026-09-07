@@ -20,12 +20,45 @@ STARTUP_TIMEOUT_S = 120.0
 
 
 def _find_mvnw(service_dir: Path) -> Path | None:
-    """Find Maven wrapper in the service directory."""
-    for name in ("mvnw.cmd", "mvnw"):
+    """Find the Maven wrapper for THIS platform in the service directory.
+
+    Windows runs ``mvnw.cmd``; every POSIX host runs ``./mvnw``. The old
+    "first that exists" scan preferred ``mvnw.cmd`` everywhere, so macOS
+    tried to exec a non-executable batch file. On POSIX the wrapper must
+    also be executable — a checked-in ``mvnw`` that lost its mode bit is
+    skipped so the system ``mvn`` fallback can take over.
+    """
+    if sys.platform == "win32":
+        candidates = ("mvnw.cmd", "mvnw.bat")
+    else:
+        candidates = ("mvnw",)
+    for name in candidates:
         p = service_dir / name
-        if p.exists():
+        if p.is_file() and (sys.platform == "win32" or os.access(p, os.X_OK)):
             return p
     return None
+
+
+def _find_maven_launcher(service_dir: Path) -> tuple[list[str] | None, str]:
+    """The command prefix to run Maven with, plus a human label.
+
+    Wrapper for this platform first, then a system ``mvn`` on PATH. Returns
+    ``(None, reason)`` when neither is usable.
+    """
+    mvnw = _find_mvnw(service_dir)
+    if mvnw is not None:
+        return [str(mvnw)], mvnw.name
+    import shutil
+
+    mvn = shutil.which("mvn")
+    if mvn:
+        return [mvn], "mvn (system)"
+    expected = "mvnw.cmd" if sys.platform == "win32" else "an executable ./mvnw"
+    return None, (
+        f"No Maven launcher: expected {expected} in the service directory, "
+        "or `mvn` on PATH. Add the wrapper (mvn wrapper:wrapper), install "
+        "Maven, or set run.script."
+    )
 
 
 def _is_port_open(host: str, port: int) -> bool:
@@ -86,13 +119,13 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             )
             return
 
-        mvnw = _find_mvnw(self.cwd)
-        if mvnw is None:
+        launcher, label = _find_maven_launcher(self.cwd)
+        if launcher is None:
             await self._status_queue.put(
                 ServiceStatusEvent(
                     self.name, ServiceStatus.failed,
-                    detail="No Maven wrapper found",
-                    error="Expected mvnw.cmd (Windows) or mvnw in this service directory.",
+                    detail="No Maven launcher found",
+                    error=label,
                     level="ERROR",
                 )
             )
@@ -109,7 +142,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             )
             return
 
-        cmd = [str(mvnw), "-q", "spring-boot:run"]
+        cmd = [*launcher, "-q", "spring-boot:run"]
 
         # Inject JDWP remote debug agent when debug config is present
         if self._debug_config is not None:

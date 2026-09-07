@@ -39,6 +39,8 @@ foundry run [-d|--debug] build [--filter NAMES]`}</code></pre>
             <tr><td><code>--filter</code></td><td><CodeList items={["dev", "build"]} /></td><td>Comma-separated service names to run (dependencies are included automatically)</td></tr>
             <tr><td><code>--migrate-db, -mdb</code></td><td><code>dev</code></td><td>Run Liquibase migrations before starting services that have a <code>database</code> block</td></tr>
             <tr><td><code>--no-tui</code></td><td><CodeList items={["dev", "build"]} /></td><td>Plain-text streaming output instead of the full-screen UI. Auto-selected when stdout is not a TTY or <code>FOUNDRY_NO_TUI=1</code> is set</td></tr>
+            <tr><td><code>--profile NAME</code></td><td><CodeList items={["dev", "build"]} /></td><td>Named run profile from the cross-repo <code>foundry.workspace.json</code> (shorthand <code>foundry run dev:NAME</code>). Schema + example: <a href="/docs/config/local">config → Multi-repo workspaces and profiles</a></td></tr>
+            <tr><td><code>--env NAME</code></td><td><code>dev</code></td><td>Named environment overlay (<code>environments.NAME</code> run/env/sshTunnels blocks + <code>.foundry/dev.NAME[.local].env</code>); same as <code>FOUNDRY_DEV_ENV</code></td></tr>
             <tr><td><code>--debug, -d</code></td><td>group</td><td>Show debug output</td></tr>
           </tbody>
         </table>

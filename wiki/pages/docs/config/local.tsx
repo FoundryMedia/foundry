@@ -191,9 +191,13 @@ FOUNDRY_DEV_TARGET=local`}</code></pre>
         <h2>Multi-repo workspaces and profiles</h2>
         <p>
           A platform{"'"}s ops repo can carry a master <code>foundry.workspace.json</code> at its
-          root naming the member repos (sibling clones) and named run profiles:
+          root naming the member repos (sibling clones) and named run profiles. Its schema is
+          published at{" "}
+          <code>https://raw.githubusercontent.com/FoundryMedia/foundry/release/foundry.workspace.schema.json</code>{" "}
+          — reference it from <code>$schema</code> for editor validation:
         </p>
         <pre><code>{`{
+  "$schema": "https://raw.githubusercontent.com/FoundryMedia/foundry/release/foundry.workspace.schema.json",
   "repos": ["fid", "foundry-auth-efga", "foundry-app"],
   "profiles": {
     "core": ["fid", "auth-efga"],
@@ -201,12 +205,17 @@ FOUNDRY_DEV_TARGET=local`}</code></pre>
   }
 }`}</code></pre>
         <p>
+          <code>repos</code> are member repository <em>directory</em> names, each with its own{" "}
+          <code>.foundry/foundry.json</code>; <code>profiles</code> map a name to manifest{" "}
+          <em>service</em> names (the keys under <code>services</code>, not repo names).{" "}
           <code>foundry run dev:core</code> (shorthand for <code>dev --profile core</code>) boots
-          that profile{"'"}s services from every member repo in one TUI — each service keeps its own
-          repo{"'"}s env files, tunnel, and credentials. Running <code>foundry run dev</code> from a
-          directory with no manifest falls back to the full workspace (everything discoverable).
-          Repos not cloned locally are skipped with a notice. <code>FOUNDRY_WORKSPACE</code> points
-          at a specific workspace file when discovery shouldn{"'"}t walk the filesystem.
+          that profile{"'"}s services from every member repo in one session — each service keeps its
+          own repo{"'"}s env files, tunnels, and credentials. Running <code>foundry run dev</code>{" "}
+          from a directory with no manifest falls back to the full workspace (everything
+          discoverable). Repos not cloned locally are skipped with a notice.{" "}
+          <code>FOUNDRY_WORKSPACE</code> points at a specific workspace file when discovery
+          shouldn{"'"}t walk the filesystem. <code>--filter a,b,c</code> remains the ad-hoc
+          alternative for a one-off subset; profiles are the shareable, committed form.
         </p>
 
         <h2>GitHub token shortcut</h2>

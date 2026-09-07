@@ -27,6 +27,7 @@ import webbrowser
 
 from foundry_cli.core.project.workspace import DiscoveredService
 from foundry_cli.core.services.runners.base import (
+    ServiceLaunchError,
     ServiceLogEvent,
     ServiceRunner,
     ServiceStatus,
@@ -695,7 +696,7 @@ class ServicesUI(App[None]):
                     self._start_after_tunnel(parent_name, runner)
                 )
             else:
-                start_task = asyncio.create_task(runner.start())
+                start_task = asyncio.create_task(self._guarded_start(runner))
 
             pump_task = asyncio.create_task(self._pump_runner_events(runner))
             status_task = asyncio.create_task(self._pump_runner_status_events(runner))
@@ -772,12 +773,32 @@ class ServicesUI(App[None]):
         except asyncio.CancelledError:
             return
 
+    async def _guarded_start(self, runner: ServiceRunner) -> None:
+        """Run start(); an exception becomes a FAILED status, never a silent
+        unobserved task error (which left the sidebar spinning forever).
+        A ServiceLaunchError already carries its own specific status."""
+        try:
+            await runner.start()
+        except ServiceLaunchError:
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001
+            self._apply_status_event(
+                ServiceStatusEvent(
+                    runner.name, ServiceStatus.failed,
+                    detail="Start failed",
+                    error=f"Start failed: {type(e).__name__}: {e}",
+                    level="ERROR",
+                )
+            )
+
     async def _start_after_tunnel(self, parent_name: str, runner: ServiceRunner) -> None:
         """Wait for a parent service's SSH tunnel to be established, then start the runner."""
         evt = self._tunnel_ready.get(parent_name)
         if evt and not evt.is_set():
             await evt.wait()
-        await runner.start()
+        await self._guarded_start(runner)
 
     def _render_selected(self) -> None:
         log = self.query_one("#log", RichLog)
@@ -1169,7 +1190,7 @@ class ServicesUI(App[None]):
         await asyncio.sleep(0.5)
         
         # Restart the runner
-        start_task = asyncio.create_task(state.runner.start())
+        start_task = asyncio.create_task(self._guarded_start(state.runner))
         pump_task = asyncio.create_task(self._pump_runner_events(state.runner))
         status_task = asyncio.create_task(self._pump_runner_status_events(state.runner))
         

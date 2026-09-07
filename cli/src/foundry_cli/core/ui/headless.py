@@ -16,6 +16,7 @@ from typing import Dict
 
 from foundry_cli.core.project.workspace import DiscoveredService
 from foundry_cli.core.services.runners.base import (
+    ServiceLaunchError,
     ServiceLogEvent,
     ServiceRunner,
     ServiceStatus,
@@ -123,11 +124,34 @@ class HeadlessServicesRunner:
 
     # ── lifecycle ─────────────────────────────────────────────────────
 
+    async def _guarded_start(self, runner: ServiceRunner) -> None:
+        """Run start(); an exception is a FAILED service, never a silent hang.
+
+        A runner that cannot spawn already emitted its own specific failed
+        status (ServiceLaunchError); anything else gets a generic one so the
+        all-failed exit rule can fire.
+        """
+        try:
+            await runner.start()
+        except ServiceLaunchError:
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — any start failure must surface
+            self._on_status(
+                ServiceStatusEvent(
+                    runner.name, ServiceStatus.failed,
+                    detail="Start failed",
+                    error=f"Start failed: {type(e).__name__}: {e}",
+                    level="ERROR",
+                )
+            )
+
     async def _start_after_tunnel(self, parent_name: str, runner: ServiceRunner) -> None:
         evt = self._tunnel_ready.get(parent_name)
         if evt is not None and not evt.is_set():
             await evt.wait()
-        await runner.start()
+        await self._guarded_start(runner)
 
     async def _main(self) -> int:
         self._stop_event = asyncio.Event()
@@ -159,7 +183,7 @@ class HeadlessServicesRunner:
                 parent = svc.name.split("/", 1)[0]
                 tasks.append(asyncio.create_task(self._start_after_tunnel(parent, runner)))
             else:
-                tasks.append(asyncio.create_task(runner.start()))
+                tasks.append(asyncio.create_task(self._guarded_start(runner)))
             tasks.append(asyncio.create_task(self._pump_logs(runner)))
             tasks.append(asyncio.create_task(self._pump_status(runner)))
 

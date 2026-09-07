@@ -28,6 +28,13 @@ class ServiceStatus(str):
     failed = "failed"
 
 
+class ServiceLaunchError(RuntimeError):
+    """A runner could not even spawn its process (missing/non-executable
+    binary, bad cwd). The runner has ALREADY emitted a ``failed`` status
+    event with the specifics before raising — drivers catching this must
+    not emit a second, vaguer one."""
+
+
 @dataclass(frozen=True)
 class ServiceStatusEvent:
     """Status update emitted by a runner.

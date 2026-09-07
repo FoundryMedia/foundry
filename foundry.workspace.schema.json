@@ -1,0 +1,43 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/FoundryMedia/foundry/release/foundry.workspace.schema.json",
+  "title": "Foundry Workspace (foundry.workspace.json)",
+  "description": "The master multi-repo manifest, placed at the ROOT of a platform's ops repo (or any aggregator directory). Names the member repos — resolved as sibling clones of the ops repo (or children of an aggregator directory) — and the named run profiles used by `foundry run dev --profile <name>` / `foundry run dev:<name>`. Discovery: FOUNDRY_WORKSPACE (a file, or a directory holding one) wins; otherwise the CLI walks up from the current directory checking each directory AND its immediate children, so running inside any sibling clone still finds it.",
+  "type": "object",
+  "required": ["repos"],
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "Editor hint. Point at the published schema for validation/autocomplete."
+    },
+    "repos": {
+      "type": "array",
+      "description": "Member repository DIRECTORY names (not URLs), each carrying its own .foundry/foundry.json (or root foundry.json). A repo not cloned locally is skipped with a notice — a partially-checked-out workspace still runs.",
+      "items": { "type": "string", "minLength": 1 },
+      "minItems": 1,
+      "uniqueItems": true
+    },
+    "profiles": {
+      "type": "object",
+      "description": "Named run profiles: profile name -> the manifest SERVICE names (keys under `services` in the member manifests, not repo names) it starts. `foundry run dev:core` boots the `core` profile's services from every member repo in one session; each service keeps its own repo's env files, tunnels, and credentials. A profile naming an unknown service warns and continues.",
+      "additionalProperties": {
+        "type": "array",
+        "items": { "type": "string", "minLength": 1 },
+        "minItems": 1,
+        "uniqueItems": true
+      }
+    }
+  },
+  "additionalProperties": false,
+  "examples": [
+    {
+      "$schema": "https://raw.githubusercontent.com/FoundryMedia/foundry/release/foundry.workspace.schema.json",
+      "repos": ["fid", "foundry-auth-efga", "foundry-app", "foundry-hub"],
+      "profiles": {
+        "core": ["fid", "auth-efga"],
+        "web": ["fid", "auth-efga", "web"],
+        "all": ["fid", "auth-efga", "web", "hub"]
+      }
+    }
+  ]
+}

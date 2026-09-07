@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import socket
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,6 +23,65 @@ from foundry_cli.core.services.runners.base import ServiceLogEvent, ServiceStatu
 # Suppress verbose paramiko/sshtunnel logging
 logging.getLogger("paramiko").setLevel(logging.WARNING)
 logging.getLogger("sshtunnel").setLevel(logging.WARNING)
+
+
+_PASSPHRASE_KEY_RE = re.compile(r"Password is required for key\s+(?P<path>\S.*)$")
+
+
+class _TunnelLibLogHandler(logging.Handler):
+    """Route sshtunnel/paramiko records into the tunnel's own log stream.
+
+    Without this, sshtunnel attaches a bare StreamHandler: its lines land on
+    stderr UNPREFIXED (escaping the ``[service]`` tagging that makes
+    ``--no-tui`` parseable), and its key scan logs
+    ``ERROR Password is required for key ~/.ssh/id_ed25519`` on every
+    SUCCESSFUL agent-authenticated run — a non-fatal fallback reported as
+    an error. Here that one is rewritten to a DEBUG line saying what
+    actually happens; everything else WARNING+ is forwarded with the
+    tunnel label; chatter below WARNING is dropped.
+    """
+
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        queue: "asyncio.Queue[ServiceLogEvent]",
+        service_name: str,
+        label: str,
+    ) -> None:
+        super().__init__(level=logging.DEBUG)
+        self._loop = loop
+        self._queue = queue
+        self._service_name = service_name
+        self._label = label
+
+    def emit(self, record: logging.LogRecord) -> None:
+        try:
+            msg = record.getMessage()
+        except Exception:
+            return
+        m = _PASSPHRASE_KEY_RE.search(msg)
+        if m:
+            msg = (
+                f"key {m.group('path').strip()} is passphrase-protected, "
+                "falling back to ssh-agent"
+            )
+            level = "DEBUG"
+        elif record.levelno >= logging.ERROR:
+            level = "ERROR"
+        elif record.levelno >= logging.WARNING:
+            level = "WARN"
+        else:
+            return
+        event = ServiceLogEvent(
+            service_name=self._service_name,
+            stream="stdout",
+            line=f"{self._label} {msg}",
+            level=level,
+        )
+        try:
+            self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
+        except RuntimeError:
+            pass  # loop closed during teardown
 
 
 def load_ssh_pkey(key_file: str | Path):
@@ -199,6 +259,33 @@ class SshTunnelRunner:
         self._tunnel = None  # SSHTunnelForwarder instance
         self._tunnel_name = tunnel_name
         self._v6_relay: _LoopbackV6Relay | None = None
+        self._lib_logger: logging.Logger | None = None
+
+    @property
+    def label(self) -> str:
+        """The ``[tunnel:<name>]`` tag every line from this tunnel carries
+        (the legacy lone tunnel keeps the bare ``[tunnel]``)."""
+        if self._tunnel_name and self._tunnel_name != "default":
+            return f"[tunnel:{self._tunnel_name}]"
+        return "[tunnel]"
+
+    def _make_lib_logger(self) -> logging.Logger:
+        """A per-runner logger handed to sshtunnel so its (and paramiko's)
+        records flow through our queue instead of a bare stderr handler.
+        sshtunnel only attaches its console handler when the logger it is
+        given has none — ours has one, so it never does."""
+        logger = logging.getLogger(f"foundry.sshtunnel.{id(self)}")
+        logger.handlers = [
+            _TunnelLibLogHandler(
+                asyncio.get_running_loop(),
+                self._log_queue,
+                self._service_name,
+                self.label,
+            )
+        ]
+        logger.propagate = False
+        logger.setLevel(logging.DEBUG)
+        return logger
 
     @property
     def name(self) -> str:
@@ -237,12 +324,13 @@ class SshTunnelRunner:
         return None
 
     async def _log(self, message: str, level: str = "INFO") -> None:
-        """Emit a log event."""
+        """Emit a log event, tagged with this tunnel's label so every line
+        stays attributable in ``--no-tui`` output."""
         await self._log_queue.put(
             ServiceLogEvent(
                 service_name=self._service_name,
                 stream="stdout",
-                line=message,
+                line=f"{self.label} {message}",
                 level=level,
             )
         )
@@ -334,6 +422,8 @@ class SshTunnelRunner:
 
             # Create tunnel in a thread pool to avoid blocking
             loop = asyncio.get_event_loop()
+            self._lib_logger = self._make_lib_logger()
+            lib_logger = self._lib_logger
 
             def create_tunnel():
                 pkey = load_ssh_pkey(key_file) if key_file else None
@@ -344,6 +434,7 @@ class SshTunnelRunner:
                     remote_bind_address=(cfg.remote_host, cfg.remote_port),
                     local_bind_address=(bind_addr, cfg.local_port),
                     set_keepalive=30.0,
+                    logger=lib_logger,
                 )
                 tunnel.start()
                 return tunnel

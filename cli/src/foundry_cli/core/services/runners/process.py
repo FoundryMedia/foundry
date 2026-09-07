@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import AsyncIterator, Sequence
 
 from foundry_cli.core.services.runners.base import (
+    ServiceLaunchError,
     ServiceLogEvent,
     ServiceRunner,
     ServiceStatus,
@@ -208,16 +209,38 @@ class ProcessBackedRunner(ServiceRunner):
             # group, and the emergency sweep can reap it if foundry dies.
             spawn_kwargs["start_new_session"] = True
 
-        self._proc = await asyncio.create_subprocess_exec(
-            *argv,
-            cwd=str(cwd or self.cwd),
-            env=env,
-            stdin=asyncio.subprocess.DEVNULL,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            limit=_STREAM_READER_LIMIT,
-            **spawn_kwargs,
-        )
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                *argv,
+                cwd=str(cwd or self.cwd),
+                env=env,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                limit=_STREAM_READER_LIMIT,
+                **spawn_kwargs,
+            )
+        except OSError as e:
+            # ENOENT / EACCES / a bad cwd. This used to escape as an
+            # unobserved task exception: no log line, no status, the
+            # tunnels held open, and `--no-tui` never exited (a mvnw.cmd
+            # exec'd on macOS sat there for 120s). Report it like any
+            # other failure so the fatal-exit rule sees it.
+            self._proc = None
+            reason = e.strerror or str(e)
+            msg = f"Cannot launch '{argv_list[0] if argv_list else '?'}': {reason}"
+            await self._log_queue.put(
+                ServiceLogEvent(self.name, "stderr", msg, level="ERROR")
+            )
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.failed,
+                    detail="Process failed to launch",
+                    error=msg,
+                    level="ERROR",
+                )
+            )
+            raise ServiceLaunchError(msg) from e
         _register_live_pid(self._proc.pid)
 
         assert self._proc.stdout is not None
