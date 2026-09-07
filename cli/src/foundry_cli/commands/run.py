@@ -220,9 +220,14 @@ def _run_services_ui(
 @click.option("--filter", "filter_svc", default=None, help="Comma-separated list of services to run (dependencies are included automatically).")
 @click.option("--migrate-db", "-mdb", is_flag=True, default=False, help="Run Liquibase database migrations before starting services that have a database block.")
 @click.option("--profile", "profile", default=None, help="Named workspace profile from foundry.workspace.json (shorthand: `foundry run dev:<profile>`).")
+@click.option("--env", "dev_environment", default=None, help="Named environment overlay: applies each service's environments.<name> run/env/sshTunnels blocks and layers .foundry/dev.<name>[.local].env. Equivalent to FOUNDRY_DEV_ENV (the flag wins). Distinct ports per env let two environments run side by side.")
 @click.pass_context
-def dev(ctx: click.Context, filter_svc: str | None, migrate_db: bool, profile: str | None) -> None:
+def dev(ctx: click.Context, filter_svc: str | None, migrate_db: bool, profile: str | None, dev_environment: str | None) -> None:
     """Run the platform in development mode with the Services UI."""
+    if dev_environment:
+        import os
+
+        os.environ["FOUNDRY_DEV_ENV"] = dev_environment.strip()
     _run_services_ui("dev", filter_svc=filter_svc, migrate_db=migrate_db, profile=profile)
 
 

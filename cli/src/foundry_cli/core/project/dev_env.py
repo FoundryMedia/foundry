@@ -66,12 +66,29 @@ def _parse_env_file(path: Path) -> dict[str, str]:
     return result
 
 
-def load_env_files(workspace_root: Path) -> dict[str, str]:
-    """The workspace's dev env-file layer (committed defaults, then local)."""
+def resolve_dev_environment() -> str | None:
+    """The selected dev environment name (``foundry run dev --env <name>``
+    sets ``FOUNDRY_DEV_ENV``; the variable works standalone too)."""
+    name = os.environ.get("FOUNDRY_DEV_ENV", "").strip()
+    return name or None
+
+
+def load_env_files(workspace_root: Path, env_name: str | None = None) -> dict[str, str]:
+    """The workspace's dev env-file layer (later wins).
+
+    Base pair, then the selected environment's pair:
+    ``dev.env`` → ``dev.<env>.env`` → ``dev.local.env`` → ``dev.<env>.local.env``.
+    The nested ``.foundry/.gitignore`` covers ``*.local.env``, so the two
+    local files stay personal.
+    """
     foundry_dir = workspace_root / ".foundry"
     env: dict[str, str] = {}
     env.update(_parse_env_file(foundry_dir / "dev.env"))
+    if env_name:
+        env.update(_parse_env_file(foundry_dir / f"dev.{env_name}.env"))
     env.update(_parse_env_file(foundry_dir / "dev.local.env"))
+    if env_name:
+        env.update(_parse_env_file(foundry_dir / f"dev.{env_name}.local.env"))
     return env
 
 
@@ -206,6 +223,100 @@ def _merge_tunnel_envs(
     return merged
 
 
+# camelCase overlay key -> SshTunnelConfig field (strings get ${VAR} expansion)
+_TUNNEL_FIELD_MAP = {
+    "localPort": "local_port",
+    "remoteHost": "remote_host",
+    "remotePort": "remote_port",
+    "host": "host",
+    "user": "user",
+    "password": "password",
+    "bastionTag": "bastion_tag",
+    "keySecret": "key_secret",
+    "credentialsSecret": "credentials_secret",
+    "injectEnv": "inject_env",
+    "awsRegion": "aws_region",
+    "env": "env",
+}
+
+
+def _merge_tunnel_fields(base: SshTunnelConfig, raw: dict) -> SshTunnelConfig:
+    """Field-level overlay onto an existing tunnel: only the keys given
+    change (``injectEnv``/``env`` dicts are replaced wholesale)."""
+    kwargs: dict = {}
+    for camel, attr in _TUNNEL_FIELD_MAP.items():
+        if camel not in raw:
+            continue
+        value = raw[camel]
+        if isinstance(value, str):
+            value = os.path.expandvars(value)
+        elif isinstance(value, dict):
+            value = dict(value)
+        kwargs[attr] = value
+    return replace(base, **kwargs) if kwargs else base
+
+
+def apply_env_overlay(cfg, env_name: str | None):
+    """Apply a service's ``environments.<env>`` dev overlay onto its config.
+
+    Consumed ONLY by run dev. Merge semantics (per the Wave-4 design):
+    ``run`` shallow-merges (port/actuatorPort/script/args override when
+    present, run.env layers in), ``env`` layers in, ``sshTunnels`` merges BY
+    TUNNEL NAME (existing entry → field-level merge; new name → full config;
+    ``null`` → remove). Returns cfg unchanged when no overlay applies.
+    """
+    if not env_name:
+        return cfg
+    overlay = cfg.environments.get(env_name)
+    if overlay is None:
+        return cfg
+
+    from foundry_cli.core.project.manifest import SshTunnelConfig as _Cfg
+
+    changes: dict = {}
+
+    run = overlay.run_overlay
+    if run:
+        if run.get("port") is not None:
+            changes["port"] = run["port"]
+        if run.get("actuatorPort") is not None:
+            changes["actuator_port"] = run["actuatorPort"]
+        if run.get("script") is not None:
+            changes["script"] = run["script"]
+        if isinstance(run.get("args"), list):
+            changes["args"] = tuple(run["args"])
+
+    env = dict(cfg.env)
+    if isinstance(run.get("env"), dict):
+        env.update({str(k): str(v) for k, v in run["env"].items()})
+    if overlay.env_overlay:
+        env.update({str(k): str(v) for k, v in overlay.env_overlay.items()})
+    if env != cfg.env:
+        changes["env"] = env
+
+    if overlay.ssh_tunnels_overlay:
+        tunnels = dict(cfg.ssh_tunnels)
+        legacy = cfg.ssh_tunnels_legacy
+        for name, raw in overlay.ssh_tunnels_overlay.items():
+            if raw is None:
+                tunnels.pop(name, None)
+                continue
+            if not isinstance(raw, dict):
+                raise FoundryError(
+                    f"environments.{env_name}.sshTunnels.{name} must be an "
+                    "object or null."
+                )
+            if name in tunnels:
+                tunnels[name] = _merge_tunnel_fields(tunnels[name], raw)
+            else:
+                tunnels[name] = _Cfg.from_dict(raw)
+                legacy = False  # a named addition means the modern contract
+        changes["ssh_tunnels"] = tunnels
+        changes["ssh_tunnels_legacy"] = legacy
+
+    return replace(cfg, **changes) if changes else cfg
+
+
 def _check_local_port_collisions(tunnels: dict[str, SshTunnelConfig]) -> None:
     seen: dict[int, str] = {}
     for name, tunnel in tunnels.items():
@@ -232,13 +343,15 @@ def prepare_service_for_dev(
     Env files win over injection so a developer can deliberately override any
     injected value.
     """
-    cfg = service.config
-    file_env = load_env_files(workspace_root)
+    env_name = resolve_dev_environment()
+    cfg = apply_env_overlay(service.config, env_name)
+    file_env = load_env_files(workspace_root, env_name)
+    env_marker = {"FOUNDRY_DEV_ENV": env_name} if env_name else {}
     stack = {**cfg.env, **file_env}
     mode = resolve_dev_target(stack, cfg.ssh_tunnels)
 
     if mode == "local" or not cfg.ssh_tunnels:
-        env = {**cfg.env, **file_env, "FOUNDRY_DEV_MODE": "local"}
+        env = {**cfg.env, **file_env, **env_marker, "FOUNDRY_DEV_MODE": "local"}
         new_cfg = replace(cfg, env=env, ssh_tunnels={})
         return replace(service, config=new_cfg), "local", ()
 
@@ -253,6 +366,7 @@ def prepare_service_for_dev(
         **cfg.dev_prod_guard_env,
         **injected,
         **file_env,
+        **env_marker,
         "FOUNDRY_DEV_MODE": "prod",
     }
     new_cfg = replace(cfg, env=env, ssh_tunnels=tunnels)
@@ -261,7 +375,9 @@ def prepare_service_for_dev(
 
 
 __all__ = [
+    "apply_env_overlay",
     "load_env_files",
+    "resolve_dev_environment",
     "resolve_dev_target",
     "prepare_service_for_dev",
 ]

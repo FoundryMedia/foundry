@@ -345,11 +345,10 @@
 
     "environmentConfig": {
       "type": "object",
-      "description": "Configuration for a deployment environment. Maps a Git branch to a named environment.",
-      "required": ["branch"],
+      "description": "A named environment: a Git-branch mapping for CI, and/or dev-run overlays consumed by 'foundry run dev --env <name>'. An environment without 'branch' is dev-only — invisible to the CI generators.",
       "properties": {
         "branch": {
-          "description": "Git branch name that triggers deployment to this environment.",
+          "description": "Git branch name that triggers deployment to this environment. Required for CI environments; omit for a dev-only overlay environment.",
           "type": "string"
         },
         "enabled": {
@@ -364,6 +363,19 @@
         },
         "iac": {
           "description": "Infrastructure-specific configuration for this environment. Contains provider-specific details (AWS region, account, domain, global resources like lambdas and bastion). Supports {name_prefix}, {prefix}, {env} template variables resolved at generation time.",
+          "type": "object"
+        },
+        "run": {
+          "description": "Dev-run overlay: shallow-merged over the service's base run block when this environment is selected (port/actuatorPort/script/args replace; run.env layers in). Read only by 'foundry run dev'.",
+          "type": "object"
+        },
+        "env": {
+          "description": "Dev-run overlay: env vars layered into the service's environment when this environment is selected.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "sshTunnels": {
+          "description": "Dev-run overlay: merged BY TUNNEL NAME over the service's tunnels — an existing name field-merges (only the given keys change), a new name is a full tunnel config, null removes the tunnel. Give each environment distinct localPorts so environments can run side by side.",
           "type": "object"
         }
       },

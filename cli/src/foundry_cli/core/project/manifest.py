@@ -338,20 +338,40 @@ class DeployConfig:
 
 @dataclass(frozen=True)
 class EnvironmentConfig:
-    """Maps a deployment environment to a Git branch."""
+    """A named environment: CI branch mapping and/or dev-run overlays.
 
-    branch: str
+    ``branch``/``enabled``/``autoApprove``/``iac`` are the CI semantics.
+    ``run``/``env``/``sshTunnels`` are OPTIONAL dev-run overlays consumed
+    only by ``foundry run dev --env <name>`` (raw dicts, applied over the
+    service's base config at dev-prepare time). A dev-only environment may
+    omit ``branch`` entirely — branchless environments are invisible to the
+    CI generators (see ``resolve_environments``).
+    """
+
+    branch: str = ""
     enabled: bool = True
     auto_approve: bool = False
     iac: dict[str, Any] = field(default_factory=dict)
+    # Dev-run overlays (raw manifest dicts; see core/project/dev_env.py)
+    run_overlay: dict[str, Any] = field(default_factory=dict)
+    env_overlay: dict[str, str] = field(default_factory=dict)
+    ssh_tunnels_overlay: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "EnvironmentConfig":
+        run_overlay = data.get("run", {})
+        env_overlay = data.get("env", {})
+        tunnels_overlay = data.get("sshTunnels", {})
         return cls(
-            branch=data["branch"],
+            branch=data.get("branch", ""),
             enabled=data.get("enabled", True),
             auto_approve=data.get("autoApprove", False),
             iac=dict(data.get("iac", {})),
+            run_overlay=dict(run_overlay) if isinstance(run_overlay, dict) else {},
+            env_overlay=dict(env_overlay) if isinstance(env_overlay, dict) else {},
+            ssh_tunnels_overlay=(
+                dict(tunnels_overlay) if isinstance(tunnels_overlay, dict) else {}
+            ),
         )
 
 
@@ -878,7 +898,10 @@ class ProjectManifest:
         svc = self.services_config.get(service_name)
         if svc and svc.environments:
             merged.update(svc.environments)
-        return merged
+        # Dev-only environments (no branch) are run-dev overlays, not CI
+        # targets — the pipeline/caller/static-iac generators must not see
+        # them.
+        return {name: cfg for name, cfg in merged.items() if cfg.branch}
 
     @property
     def services_config(self) -> dict[str, ServiceConfig]:

@@ -114,6 +114,40 @@ FOUNDRY_DEV_TARGET=local`}</code></pre>
           removes it, and <code>sshTunnels: false</code> disables them all.
         </p>
 
+        <h2>Named environments — run several side by side</h2>
+        <p>
+          A service can declare per-environment dev overlays inside its existing{" "}
+          <code>environments</code> block. <code>foundry run dev --env staging</code> (or{" "}
+          <code>FOUNDRY_DEV_ENV=staging</code>; the flag wins) applies each service{"'"}s{" "}
+          <code>environments.staging</code> overlay: <code>run</code> shallow-merges (port,
+          args, script replace; <code>run.env</code> layers in), <code>env</code> layers in, and{" "}
+          <code>sshTunnels</code> merges <em>by tunnel name</em> — an existing tunnel changes
+          only the fields you give, a new name is a full tunnel, <code>null</code> removes one.
+          An environment used only for dev needs no <code>branch</code>; branchless environments
+          are invisible to the CI generators.
+        </p>
+        <pre><code>{`services:
+  api:
+    run: { port: 8091 }
+    sshTunnels:
+      db: { localPort: 15432, remoteHost: \${DB_HOST}, remotePort: 5432,
+            host: \${BASTION_HOST}, credentialsSecret: acme-prod/api/db }
+    environments:
+      staging:                       # dev-only: no branch
+        run: { port: 9091 }
+        sshTunnels:
+          db: { localPort: 25432, credentialsSecret: acme-staging/api/db }`}</code></pre>
+        <p>
+          Env files gain a per-environment pair layered between the base ones:{" "}
+          <code>dev.env</code> → <code>dev.staging.env</code> → <code>dev.local.env</code> →{" "}
+          <code>dev.staging.local.env</code> (the <code>*.local.env</code> pattern stays
+          gitignored). Give each environment <strong>distinct ports</strong> (service port and
+          tunnel <code>localPort</code>s) and two terminals can run{" "}
+          <code>foundry run dev</code> and <code>foundry run dev --env staging</code>{" "}
+          simultaneously — a port collision fails loudly at bind, and the fix is one overlay
+          line.
+        </p>
+
         <h2>Multi-repo workspaces and profiles</h2>
         <p>
           A platform{"'"}s ops repo can carry a master <code>foundry.workspace.json</code> at its
