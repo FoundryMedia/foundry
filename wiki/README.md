@@ -23,4 +23,4 @@ Output goes to `out/` — ready to deploy to S3 or any static host.
 ## Deployment
 
 This site deploys as a static export to an S3 bucket behind CloudFront.
-The infrastructure is managed separately from the AAP stack.
+The infrastructure is managed separately from the platform service stacks.

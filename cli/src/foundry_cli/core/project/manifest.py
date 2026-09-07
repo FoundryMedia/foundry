@@ -634,7 +634,7 @@ def derive_prefix(name: str) -> str:
 
     Takes the first letter of each word::
 
-        "Acme Cloud Platform" → "aap"
+        "Acme Cloud Platform" → "acp"
         "My Cool Service"     → "mcs"
 
     The result is always lowercase.  Returns an empty string only if

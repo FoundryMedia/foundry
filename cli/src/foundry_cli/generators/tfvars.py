@@ -18,9 +18,9 @@ Secrets Manager to generate OpenTofu variable files.
 
 All IAC configuration supports these placeholders:
 
-- ``{prefix}`` — Platform prefix (e.g., ``aap``)
+- ``{prefix}`` — Platform prefix (e.g., ``acp``)
 - ``{env}`` — Environment name (e.g., ``prod``)
-- ``{name_prefix}`` — ``{prefix}-{env}`` (e.g., ``aap-prod``)
+- ``{name_prefix}`` — ``{prefix}-{env}`` (e.g., ``acp-prod``)
 - ``{account_id}`` — AWS account ID (resolved from STS)
 - ``{region}`` — AWS region
 - ``{iac_name}`` — IaC service name (e.g., ``microlith-service``)
@@ -337,9 +337,9 @@ def _resolve_templates(value: Any, variables: dict[str, str]) -> Any:
 
     Supported placeholders:
 
-    - ``{prefix}`` — Platform prefix (e.g., ``aap``)
+    - ``{prefix}`` — Platform prefix (e.g., ``acp``)
     - ``{env}`` — Environment name (e.g., ``prod``)
-    - ``{name_prefix}`` — ``{prefix}-{env}`` (e.g., ``aap-prod``)
+    - ``{name_prefix}`` — ``{prefix}-{env}`` (e.g., ``acp-prod``)
     - ``{account_id}`` — AWS account ID (resolved from STS)
     - ``{region}`` — AWS region (from env config)
     - ``{iac_name}`` — IaC service name (e.g., ``platform-microlith-service``)
@@ -412,7 +412,7 @@ def _load_iac_config(
     - ``lambda_functions``, ``eventbridge_rules``
 
     Args:
-        secret_id: The secret name (e.g., ``aap-prod/iac/config``).
+        secret_id: The secret name (e.g., ``acp-prod/iac/config``).
         region: Optional region override.
 
     Returns:

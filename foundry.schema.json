@@ -52,7 +52,7 @@
     },
 
     "prefix": {
-      "description": "Short prefix derived from the platform name (e.g., 'Acme Cloud Platform' → 'aap'). Used for AWS resource naming, secret prefixes, and satellite repo discovery ('{prefix}-*'). Auto-derived from name if not set.",
+      "description": "Short prefix derived from the platform name (e.g., 'Acme Cloud Platform' → 'acp'). Used for AWS resource naming, secret prefixes, and satellite repo discovery ('{prefix}-*'). Auto-derived from name if not set.",
       "type": "string",
       "pattern": "^[a-z0-9-]+$",
       "minLength": 2
@@ -216,7 +216,7 @@
           "type": "string"
         },
         "prefix": {
-          "description": "Short prefix derived from the first letter of each word in the platform name (e.g., 'Acme Cloud Platform' → 'aap'). Used to discover satellite repos matching '{prefix}-*'. Auto-derived if not set; must be at least 2 characters.",
+          "description": "Short prefix derived from the first letter of each word in the platform name (e.g., 'Acme Cloud Platform' → 'acp'). Used to discover satellite repos matching '{prefix}-*'. Auto-derived if not set; must be at least 2 characters.",
           "type": "string",
           "pattern": "^[a-z0-9-]+$",
           "minLength": 2

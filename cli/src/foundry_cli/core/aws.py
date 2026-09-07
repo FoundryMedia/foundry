@@ -18,7 +18,7 @@ Examples::
     from foundry_cli.core.aws import resolve_caller_identity, resolve_hosted_zone_id
 
     identity = resolve_caller_identity()
-    print(identity.account_id)  # "561493797917"
+    print(identity.account_id)  # "123456789012"
 
     zone_id = resolve_hosted_zone_id("example.com", region="us-east-2")
     print(zone_id)  # "Z0123456789EXAMPLE"
@@ -379,7 +379,7 @@ def resolve_ip_whitelist(
       (use the *key* parameter to specify the key name)
 
     Args:
-        secret_id: The secret name (e.g., ``aap-prod/iac/ip-whitelist``).
+        secret_id: The secret name (e.g., ``app-prod/iac/ip-whitelist``).
         key: Optional JSON key. If ``None``, expects the secret to
             be a raw JSON array.
         region: Optional region override.

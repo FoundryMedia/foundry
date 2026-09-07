@@ -1,17 +1,18 @@
 name: Wiki (OpenTofu + publish)
 
 # Provisions the wiki's S3 + CloudFront + DNS stack AND publishes the built
-# static site. Full tofu-in-CI. (release = prod branch; develop = dev.)
-#   PR (wiki/**)                  -> tofu plan + build verify (no publish)
+# static site. Full tofu-in-CI. (release = prod branch.)
+#   PR (wiki/**)                  -> tofu validate + build verify (NO AWS creds)
 #   push to release (wiki/**)     -> tofu apply + build + s3 sync + invalidate
-#   workflow_dispatch             -> apply + publish (manual)
+#   workflow_dispatch             -> apply + publish (manual, release branch)
 #
 # Auth is keyless via OIDC (assumes foundry-wiki-tofu-runner, created by the
-# one-time local bootstrap apply). State lives in the shared fgs-prod-iac-state
-# bucket under key wiki/tofu.tfstate.
-#
-# NOTE: add a GitHub Environment ("prod") protection rule with required
-# reviewers to gate apply/publish behind manual approval.
+# one-time local bootstrap apply). The role's trust policy pins the sub claim
+# to refs/heads/release, so PR runs CANNOT assume it — the PR path never
+# touches AWS (validate only, no plan against state). Do NOT add a GitHub
+# Environment to this job: environment-scoped jobs present a different OIDC
+# sub ("environment:<name>") and would fail the trust condition.
+# State lives in the shared fgs-prod-iac-state bucket, key wiki/tofu.tfstate.
 
 on:
   pull_request:
@@ -36,9 +37,8 @@ env:
 
 jobs:
   wiki:
-    name: tofu ${{ (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && 'apply + publish' || 'plan' }}
+    name: ${{ github.event_name == 'pull_request' && 'validate + build verify' || 'tofu apply + publish' }}
     runs-on: ubuntu-latest
-    environment: prod
     steps:
       - uses: actions/checkout@v4
 
@@ -50,24 +50,35 @@ jobs:
           cache: npm
           cache-dependency-path: wiki/package-lock.json
 
+      # ── PR path: no AWS credentials — syntax/config validation only ──
+      - name: tofu validate (no backend)
+        if: github.event_name == 'pull_request'
+        working-directory: ${{ env.IAC_DIR }}
+        run: |
+          tofu init -backend=false -input=false
+          tofu validate -no-color
+          tofu fmt -check -diff
+
+      # ── release path: assume the OIDC role, plan + apply + publish ──
       - name: Configure AWS credentials (OIDC)
+        if: github.event_name != 'pull_request'
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.TF_ROLE }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: tofu init
+        if: github.event_name != 'pull_request'
         working-directory: ${{ env.IAC_DIR }}
         run: tofu init -input=false
 
       - name: tofu plan
+        if: github.event_name != 'pull_request'
         working-directory: ${{ env.IAC_DIR }}
-        # PR plans are read-only previews — don't take the state lock, so they
-        # can never block an apply on release. push/dispatch plans lock normally.
-        run: tofu plan -input=false -no-color -out plan.tfplan ${{ github.event_name == 'pull_request' && '-lock=false' || '' }}
+        run: tofu plan -input=false -no-color -out plan.tfplan
 
       - name: tofu apply
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         working-directory: ${{ env.IAC_DIR }}
         run: tofu apply -input=false -no-color plan.tfplan
 
@@ -78,7 +89,7 @@ jobs:
           npm run build
 
       - name: Publish to S3 + invalidate CloudFront
-        if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+        if: github.event_name != 'pull_request'
         run: |
           BUCKET="$(tofu -chdir=$IAC_DIR output -raw bucket_name)"
           DIST="$(tofu -chdir=$IAC_DIR output -raw distribution_id)"

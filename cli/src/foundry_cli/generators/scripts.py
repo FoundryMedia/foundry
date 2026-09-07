@@ -1568,7 +1568,7 @@ def generate_tfvars_json(
         manifest: A loaded ``Manifest`` from manifest_reader.
         env_name: Target environment name (e.g., ``prod``).
         session: A boto3 Session.
-        prefix: Platform prefix (e.g., ``aap``).
+        prefix: Platform prefix (e.g., ``acp``).
 
     Returns:
         Dict ready to be serialized as JSON and written to .auto.tfvars.json.
@@ -1749,7 +1749,7 @@ def write_tfvars_json(
         manifest: A loaded ``Manifest`` from manifest_reader.
         env_name: Target environment name (e.g., ``prod``).
         session: A boto3 Session.
-        prefix: Platform prefix (e.g., ``aap``).
+        prefix: Platform prefix (e.g., ``acp``).
         output_dir: The IaC working directory (e.g., ``ci/iac/prod``).
 
     Returns:

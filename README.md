@@ -1,4 +1,4 @@
-# [Foundry](https://foundry-dev.com) · [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](#) [![npm version](https://img.shields.io/npm/v/foundry.svg)](#) [![PRs](https://img.shields.io/badge/PRs-encouraged-purple.svg)](#)
+# [Foundry](https://foundry-dev.com) · [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE) [![Release](https://img.shields.io/github/v/release/FoundryMedia/foundry)](https://github.com/FoundryMedia/foundry/releases/latest) [![PRs](https://img.shields.io/badge/PRs-encouraged-purple.svg)](https://github.com/FoundryMedia/foundry/pulls)
 
 ---
 
@@ -136,11 +136,11 @@ Foundry reflects real systems, built in the open, and refined through use — no
 
 ---
 
-## Manifest Schema (v0.3.0)
+## Manifest Schema (v0.7.0)
 
-The `foundry.json` manifest is the single source of truth for a platform's shape. As of
-schema v0.3.0, services are **lean** — operational config (ports, commands, env vars) lives
-in `.foundry/runtime.yml`, not the manifest.
+The `foundry.json` manifest is the single source of truth for a platform's shape. Services
+are **lean** — operational config (ports, commands, env vars) lives under `.foundry/`, not
+the manifest.
 
 | Section | Purpose |
 |---------|--------|

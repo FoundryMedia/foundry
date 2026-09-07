@@ -110,7 +110,7 @@ def _cook_ue_client(root: Path, build: dict, version: str) -> Path:
         "-nodebuginfo", "-unattended", "-utf8output", "-noP4",
     ]
     # Invoke the .bat directly (never `cmd /c <path> <args>` — cmd re-splits an
-    # unquoted spaced path like "F:\Documents\Unreal Projects\..." and dies).
+    # unquoted spaced path like "C:\Path With Spaces\..." and dies).
     cmd = [str(runuat)] + uat_args
 
     click.echo(click.style(f"Cooking {target} (Win64, {client_config} client) locally…", fg="cyan"))

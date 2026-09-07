@@ -47,10 +47,22 @@ override.tf.json
 *_override.tf.json
 # Keep the provider lock file committed (.terraform.lock.hcl) — do NOT ignore it.
 
-# Env files
+# Env files + build-generated version stamp (package.py writes resources/VERSION)
 VERSION
 .env
 .env.*.local
+
+# Keys / credentials — never commit key material
+*.pem
+*.key
+*.pfx
+*.p12
+id_rsa*
+credentials*
+
+# Generated tfvars (rendered FROM Secrets Manager — may carry real infra values)
+*.auto.tfvars
+*.auto.tfvars.json
 
 # OS
 .DS_Store
