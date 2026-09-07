@@ -63,6 +63,29 @@ def _is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
         return False
 
 
+def _pick_db_tunnel_dict(raw_svc: dict[str, Any]) -> dict[str, Any] | None:
+    """The tunnel dict fronting a service's DATABASE, from raw service config.
+
+    Legacy singular ``sshTunnel`` wins. For a ``sshTunnels`` map: the entry
+    named ``db``, else the SOLE entry carrying a ``credentialsSecret``;
+    ambiguous → None (mirrors ServiceConfig.db_tunnel).
+    """
+    raw = raw_svc.get("sshTunnel")
+    if isinstance(raw, dict):
+        return raw
+    multi = raw_svc.get("sshTunnels")
+    if isinstance(multi, dict) and multi:
+        if isinstance(multi.get("db"), dict):
+            return multi["db"]
+        credentialed = [
+            t for t in multi.values()
+            if isinstance(t, dict) and t.get("credentialsSecret")
+        ]
+        if len(credentialed) == 1:
+            return credentialed[0]
+    return None
+
+
 def _open_tunnel(tunnel_cfg: dict[str, Any], workspace_root: Path):
     """Open an SSH tunnel synchronously.  Returns the SSHTunnelForwarder instance."""
     from sshtunnel import SSHTunnelForwarder
@@ -365,14 +388,12 @@ def _run_db_command(
             tunnel_local_port = None
 
             local_svc = local_services.get(db_name, {})
-            if isinstance(local_svc, dict) and "sshTunnel" in local_svc:
-                raw = local_svc["sshTunnel"]
-                if isinstance(raw, dict):
-                    tunnel_cfg = raw
+            if isinstance(local_svc, dict) and (
+                "sshTunnel" in local_svc or "sshTunnels" in local_svc
+            ):
+                tunnel_cfg = _pick_db_tunnel_dict(local_svc)
             elif isinstance(raw_services.get(db_name), dict):
-                raw_svc = raw_services[db_name]
-                if "sshTunnel" in raw_svc and isinstance(raw_svc["sshTunnel"], dict):
-                    tunnel_cfg = raw_svc["sshTunnel"]
+                tunnel_cfg = _pick_db_tunnel_dict(raw_services[db_name])
 
             # Open tunnel if configured
             if tunnel_cfg:

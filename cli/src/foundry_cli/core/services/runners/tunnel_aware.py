@@ -1,10 +1,10 @@
 """Composite runner that manages SSH tunnels alongside services.
 
-When a service has an SSH tunnel configured, this runner:
-1. Starts the SSH tunnel first
-2. Waits for the tunnel to establish
+When a service has SSH tunnels configured, this runner:
+1. Starts ALL tunnels first (in parallel)
+2. Waits for every tunnel to establish — any failure fails the service
 3. Starts the actual service
-4. When stopping, stops both service and tunnel
+4. When stopping, stops both service and tunnels
 """
 
 from __future__ import annotations
@@ -25,31 +25,36 @@ from foundry_cli.core.services.ssh_tunnel import SshTunnelRunner, SshTunnelConfi
 
 class TunnelAwareRunner(ServiceRunner):
     """Wraps a service runner with SSH tunnel management.
-    
-    The tunnel is started before the service and kept alive until stop() is called.
+
+    All tunnels are started (in parallel) before the service and kept alive
+    until stop() is called. Fail-closed: if ANY tunnel fails to establish,
+    already-open tunnels are closed and the service never starts.
     """
 
     def __init__(
         self,
         inner_runner: ServiceRunner,
-        tunnel_config: ManifestTunnelConfig,
+        tunnel_configs: dict[str, ManifestTunnelConfig],
         workspace_root: Path | None = None,
         injected_env_keys: tuple[str, ...] = (),
     ) -> None:
         # Don't call super().__init__ since we're wrapping another runner
         self._inner = inner_runner
         # Convert from manifest config to ssh_tunnel config (which has extra properties)
-        self._tunnel_config = SshTunnelConfig(
-            local_port=tunnel_config.local_port,
-            remote_host=tunnel_config.remote_host,
-            remote_port=tunnel_config.remote_port,
-            host=tunnel_config.host,
-            user=tunnel_config.user,
-            password=tunnel_config.password,
-        )
+        self._tunnel_configs: dict[str, SshTunnelConfig] = {
+            name: SshTunnelConfig(
+                local_port=tc.local_port,
+                remote_host=tc.remote_host,
+                remote_port=tc.remote_port,
+                host=tc.host,
+                user=tc.user,
+                password=tc.password,
+            )
+            for name, tc in tunnel_configs.items()
+        }
         self._workspace_root = workspace_root
         self._injected_env_keys = tuple(injected_env_keys)
-        self._tunnel: SshTunnelRunner | None = None
+        self._tunnels: dict[str, SshTunnelRunner] = {}
         self._inner_log_task: asyncio.Task | None = None
         self._inner_status_task: asyncio.Task | None = None
         self._combined_log_queue: asyncio.Queue[ServiceLogEvent] = asyncio.Queue()
@@ -71,6 +76,12 @@ class TunnelAwareRunner(ServiceRunner):
     def service(self):
         return self._inner.service
 
+    def _tunnel_label(self, tunnel_name: str) -> str:
+        # The lone legacy tunnel keeps the historical bare "[tunnel]" label.
+        if tunnel_name == "default" and len(self._tunnel_configs) == 1:
+            return "[tunnel]"
+        return f"[tunnel:{tunnel_name}]"
+
     async def _log(self, message: str, level: str = "DEBUG") -> None:
         """Helper to emit a log message."""
         await self._combined_log_queue.put(
@@ -83,10 +94,14 @@ class TunnelAwareRunner(ServiceRunner):
         )
 
     async def start(self) -> None:
-        """Start tunnel first, then the service."""
-        cfg = self._tunnel_config
-        
-        await self._log(f"[tunnel] Configuring SSH tunnel: 0.0.0.0:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} via {cfg.user}@{cfg.host}", "INFO")
+        """Start all tunnels first, then the service."""
+        for tunnel_name, cfg in self._tunnel_configs.items():
+            await self._log(
+                f"{self._tunnel_label(tunnel_name)} Configuring SSH tunnel: "
+                f"0.0.0.0:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} "
+                f"via {cfg.user}@{cfg.host}",
+                "INFO",
+            )
         if self._injected_env_keys:
             await self._log(
                 "[tunnel] dev target = PROD — service env carries: "
@@ -94,50 +109,68 @@ class TunnelAwareRunner(ServiceRunner):
                 + " (values never logged)",
                 "INFO",
             )
-        
+
         # Emit starting status
+        hosts = ", ".join(sorted({c.host for c in self._tunnel_configs.values()}))
         await self._combined_status_queue.put(
             ServiceStatusEvent(
                 self.name, ServiceStatus.starting,
-                detail=f"Establishing SSH tunnel to {cfg.host}",
+                detail=f"Establishing {len(self._tunnel_configs)} SSH tunnel(s) to {hosts}",
                 level="INFO",
             )
         )
 
-        # Create the tunnel runner - pass our combined queue directly
+        # Create the tunnel runners - pass our combined queue directly
         # so SSH logs go straight to the output without forwarding
-        self._tunnel = SshTunnelRunner(
-            service_name=self.name,
-            config=cfg,
-            workspace_root=self._workspace_root,
-            log_queue=self._combined_log_queue,
+        self._tunnels = {
+            tunnel_name: SshTunnelRunner(
+                service_name=self.name,
+                config=cfg,
+                workspace_root=self._workspace_root,
+                log_queue=self._combined_log_queue,
+                tunnel_name=tunnel_name,
+            )
+            for tunnel_name, cfg in self._tunnel_configs.items()
+        }
+
+        await self._log("[tunnel] Starting SSH connection(s)...", "DEBUG")
+
+        results = await asyncio.gather(
+            *(t.start() for t in self._tunnels.values()), return_exceptions=True
         )
-        
-        # Start tunnel and wait for it to establish
-        await self._log("[tunnel] Starting SSH connection...", "DEBUG")
-        
-        tunnel_ok = await self._tunnel.start()
-        
+        failed = [
+            tunnel_name
+            for tunnel_name, ok in zip(self._tunnels.keys(), results)
+            if ok is not True
+        ]
+
         # Give time for any pending log messages
         await asyncio.sleep(0.2)
-        
-        if not tunnel_ok:
-            await self._log("[tunnel] SSH tunnel failed to establish", "ERROR")
+
+        if failed:
+            await self._log(
+                f"[tunnel] SSH tunnel(s) failed to establish: {', '.join(failed)}",
+                "ERROR",
+            )
+            # Close whatever DID open — never leave half a tunnel set up.
+            await asyncio.gather(
+                *(t.stop() for t in self._tunnels.values()), return_exceptions=True
+            )
             await self._combined_status_queue.put(
                 ServiceStatusEvent(
                     self.name, ServiceStatus.failed,
-                    detail="SSH tunnel failed to establish",
-                    error="Cannot start service without tunnel. Check SSH config, key file, and network.",
+                    detail=f"SSH tunnel(s) failed: {', '.join(failed)}",
+                    error="Cannot start service without all tunnels. Check SSH config, key file, and network.",
                     level="ERROR",
                 )
             )
             return
 
-        await self._log("[tunnel] SSH tunnel established successfully", "INFO")
+        await self._log("[tunnel] All SSH tunnels established successfully", "INFO")
         await self._combined_status_queue.put(
             ServiceStatusEvent(
                 self.name, ServiceStatus.starting,
-                detail="SSH tunnel established, starting service...",
+                detail="SSH tunnels established, starting service...",
                 level="INFO",
             )
         )
@@ -151,7 +184,7 @@ class TunnelAwareRunner(ServiceRunner):
         await self._inner.start()
 
     async def stop(self) -> None:
-        """Stop both the service and the tunnel."""
+        """Stop both the service and the tunnels."""
         # Cancel forwarding tasks
         if self._inner_log_task:
             self._inner_log_task.cancel()
@@ -160,12 +193,14 @@ class TunnelAwareRunner(ServiceRunner):
 
         # Stop service first
         await self._inner.stop()
-        
-        # Then stop tunnel
-        if self._tunnel:
-            await self._tunnel.stop()
-        
-        await self._log("[tunnel] SSH tunnel closed", "INFO")
+
+        # Then stop tunnels
+        if self._tunnels:
+            await asyncio.gather(
+                *(t.stop() for t in self._tunnels.values()), return_exceptions=True
+            )
+
+        await self._log("[tunnel] SSH tunnel(s) closed", "INFO")
 
     async def _forward_inner_logs(self) -> None:
         """Forward inner runner's log events to combined queue."""

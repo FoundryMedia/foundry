@@ -105,6 +105,7 @@ class SshTunnelRunner:
         config: SshTunnelConfig,
         workspace_root: Path | None = None,
         log_queue: asyncio.Queue[ServiceLogEvent] | None = None,
+        tunnel_name: str | None = None,
     ) -> None:
         self._service_name = service_name
         self._config = config
@@ -112,9 +113,14 @@ class SshTunnelRunner:
         self._log_queue = log_queue or asyncio.Queue()
         self._status_queue: asyncio.Queue[ServiceStatusEvent] = asyncio.Queue()
         self._tunnel = None  # SSHTunnelForwarder instance
+        self._tunnel_name = tunnel_name
 
     @property
     def name(self) -> str:
+        # Named tunnels (multi-tunnel services) label their events;
+        # the legacy single tunnel keeps the historical bare suffix.
+        if self._tunnel_name and self._tunnel_name != "default":
+            return f"{self._service_name}#tunnel:{self._tunnel_name}"
         return f"{self._service_name}#tunnel"
 
     @property

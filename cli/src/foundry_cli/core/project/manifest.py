@@ -33,6 +33,12 @@ class SshTunnelConfig:
     credentials_secret: str | None = None
     inject_env: dict[str, str] = field(default_factory=dict)
     aws_region: str | None = None
+    # env: plain env vars this tunnel contributes to the service in prod-target
+    # dev, with ${localPort}/${localHost} placeholder expansion — e.g.
+    # {"AUTH_BASE_URL": "http://localhost:${localPort}"}. This is the EXPLICIT
+    # replacement for the legacy implicit DB_HOST/DB_PORT injection, which only
+    # the singular `sshTunnel` form keeps.
+    env: dict[str, str] = field(default_factory=dict)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SshTunnelConfig":
@@ -42,6 +48,7 @@ class SshTunnelConfig:
             return value
 
         inject_env = data.get("injectEnv", {})
+        tunnel_env = data.get("env", {})
         return cls(
             local_port=data["localPort"],
             remote_host=_expand(data["remoteHost"]),
@@ -54,6 +61,7 @@ class SshTunnelConfig:
             credentials_secret=data.get("credentialsSecret"),
             inject_env=dict(inject_env) if isinstance(inject_env, dict) else {},
             aws_region=data.get("awsRegion"),
+            env=dict(tunnel_env) if isinstance(tunnel_env, dict) else {},
         )
 
 
@@ -401,7 +409,13 @@ class ServiceConfig:
     # Run strictness controls (local/workspace overrides or manifest run block)
     strict_mode_enabled: bool | None = None
     strict_health_ports: bool | None = None
-    ssh_tunnel: SshTunnelConfig | None = None
+    # SSH tunnels by name. The legacy singular `sshTunnel` block parses as
+    # {"default": cfg} with ssh_tunnels_legacy=True — that form (and ONLY
+    # that form) keeps the implicit DB_HOST/DB_PORT + default-creds-mapping
+    # injection in dev_env. `sshTunnels` map entries inject explicitly via
+    # their own `env`/`injectEnv`.
+    ssh_tunnels: dict[str, SshTunnelConfig] = field(default_factory=dict)
+    ssh_tunnels_legacy: bool = False
     sidecars: dict[str, "SidecarConfig"] = field(default_factory=dict)
 
     # Safety env injected ONLY when run dev resolves this service to the
@@ -462,11 +476,44 @@ class ServiceConfig:
         """Service location within its repo. ``"."`` = repo root (multi-repo default)."""
         return self.path or "."
 
+    @property
+    def db_tunnel(self) -> SshTunnelConfig | None:
+        """The tunnel fronting this service's DATABASE (for `foundry db` /
+        the migration wrapper's host override).
+
+        Legacy singular form → that tunnel. Map form → the entry named
+        ``db``, else the SOLE entry carrying a ``credentialsSecret``;
+        ambiguous (two credentialed tunnels, none named db) → None.
+        """
+        if not self.ssh_tunnels:
+            return None
+        if self.ssh_tunnels_legacy:
+            return next(iter(self.ssh_tunnels.values()))
+        if "db" in self.ssh_tunnels:
+            return self.ssh_tunnels["db"]
+        credentialed = [t for t in self.ssh_tunnels.values() if t.credentials_secret]
+        if len(credentialed) == 1:
+            return credentialed[0]
+        return None
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "ServiceConfig":
-        ssh_tunnel = None
-        if "sshTunnel" in data and data["sshTunnel"]:
-            ssh_tunnel = SshTunnelConfig.from_dict(data["sshTunnel"])
+        raw_single = data.get("sshTunnel")
+        raw_multi = data.get("sshTunnels")
+        if raw_single and raw_multi:
+            raise FoundryError(
+                "A service may declare 'sshTunnel' (legacy, single) OR "
+                "'sshTunnels' (named map), not both."
+            )
+        ssh_tunnels: dict[str, SshTunnelConfig] = {}
+        ssh_tunnels_legacy = False
+        if isinstance(raw_multi, dict) and raw_multi:
+            for tunnel_name, tunnel_data in raw_multi.items():
+                if isinstance(tunnel_data, dict):
+                    ssh_tunnels[tunnel_name] = SshTunnelConfig.from_dict(tunnel_data)
+        elif raw_single:
+            ssh_tunnels = {"default": SshTunnelConfig.from_dict(raw_single)}
+            ssh_tunnels_legacy = True
 
         # ── Stack resolution ─────────────────────────────────────────
         # v0.5.0: nested "stack" block
@@ -598,7 +645,8 @@ class ServiceConfig:
             env=env,
             strict_mode_enabled=strict_mode_enabled,
             strict_health_ports=strict_health_ports,
-            ssh_tunnel=ssh_tunnel,
+            ssh_tunnels=ssh_tunnels,
+            ssh_tunnels_legacy=ssh_tunnels_legacy,
             sidecars=sidecars,
             dev_prod_guard_env=dev_prod_guard_env,
         )

@@ -609,8 +609,13 @@
           "default": true
         },
         "sshTunnel": {
-          "description": "SSH tunnel opened before the service starts in prod-target dev (e.g. to a private RDS through a bastion). See runConfig/dev-env docs for target resolution.",
+          "description": "LEGACY single SSH tunnel opened before the service starts in prod-target dev. Keeps the implicit DB_HOST/DB_PORT + default-credentials injection. Prefer 'sshTunnels' for new services; declaring both is an error.",
           "$ref": "#/definitions/sshTunnelConfig"
+        },
+        "sshTunnels": {
+          "description": "Named SSH tunnels opened (in parallel, all-or-nothing) before the service starts in prod-target dev. Keys are tunnel names (label logs and config.yml/env overrides). Map entries inject ONLY what they declare via 'env'/'injectEnv' — no implicit DB_* injection. The entry named 'db' (or the sole entry with a credentialsSecret) is treated as the database tunnel by 'foundry db' and the migration wrapper.",
+          "type": "object",
+          "additionalProperties": { "$ref": "#/definitions/sshTunnelConfig" }
         },
         "sidecars": {
           "description": "Local sidecar processes started alongside the service by 'foundry run' (e.g. OpenFGA, Redis). Keys are sidecar names.",
@@ -807,7 +812,12 @@
           "type": "string"
         },
         "injectEnv": {
-          "description": "Override/extend the injected credential env-var mapping: ENV_VAR -> secret field (e.g. {\"PGUSER\": \"username\"}).",
+          "description": "Override/extend the injected credential env-var mapping: ENV_VAR -> secret field (e.g. {\"PGUSER\": \"username\"}). Requires 'credentialsSecret'.",
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "env": {
+          "description": "Plain env vars this tunnel contributes to the service in prod-target dev, with ${localPort}/${localHost} placeholder expansion (e.g. {\"AUTH_BASE_URL\": \"http://localhost:${localPort}\"}). The explicit replacement for the legacy implicit DB_HOST/DB_PORT injection.",
           "type": "object",
           "additionalProperties": { "type": "string" }
         },

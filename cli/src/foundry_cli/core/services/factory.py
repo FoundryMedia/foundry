@@ -113,8 +113,11 @@ def create_runner(
         from foundry_cli.core.project.manifest import DatabaseConfig as DC
         db_cfg = DC.from_dict(cfg.database_config)
 
-        # Determine tunnel local port for host override
-        tunnel_local_port = cfg.ssh_tunnel.local_port if cfg.ssh_tunnel else None
+        # Determine tunnel local port for host override — the tunnel fronting
+        # the service's DATABASE (legacy single tunnel, entry named 'db', or
+        # the sole credentialed entry; see ServiceConfig.db_tunnel).
+        db_tunnel = cfg.db_tunnel
+        tunnel_local_port = db_tunnel.local_port if db_tunnel else None
 
         runner = MigrationAwareRunner(
             inner_runner=runner,
@@ -123,12 +126,12 @@ def create_runner(
             tunnel_local_port=tunnel_local_port,
         )
 
-    # Wrap with tunnel support if configured (dev_env strips the tunnel for
+    # Wrap with tunnel support if configured (dev_env strips the tunnels for
     # local-target services, so reaching here in dev means prod target).
-    if cfg.ssh_tunnel is not None:
+    if cfg.ssh_tunnels:
         runner = TunnelAwareRunner(
             inner_runner=runner,
-            tunnel_config=cfg.ssh_tunnel,
+            tunnel_configs=cfg.ssh_tunnels,
             workspace_root=resolved_root,
             injected_env_keys=injected_env_keys,
         )

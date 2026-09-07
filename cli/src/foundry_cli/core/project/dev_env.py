@@ -75,7 +75,9 @@ def load_env_files(workspace_root: Path) -> dict[str, str]:
     return env
 
 
-def resolve_dev_target(stack: dict[str, str], tunnel: SshTunnelConfig | None) -> str:
+def resolve_dev_target(
+    stack: dict[str, str], tunnels: dict[str, SshTunnelConfig]
+) -> str:
     """Decide ``prod`` vs ``local`` for one service from its resolved env stack."""
     explicit = os.environ.get("FOUNDRY_DEV_TARGET") or stack.get("FOUNDRY_DEV_TARGET")
     if explicit:
@@ -86,15 +88,17 @@ def resolve_dev_target(stack: dict[str, str], tunnel: SshTunnelConfig | None) ->
             f"Invalid FOUNDRY_DEV_TARGET '{explicit}' (expected 'prod' or 'local')."
         )
 
-    if tunnel is None:
+    if not tunnels:
         return "local"
 
-    # Introspection: does the configured env already point at the tunnel /
-    # a remote database?
-    local_port = str(tunnel.local_port)
-    if stack.get("DB_PORT", "").strip() == local_port:
+    # Introspection: does the configured env already point at any tunnel /
+    # a remote database? (Heuristic — a multi-tunnel service should set
+    # FOUNDRY_DEV_TARGET explicitly in .foundry/dev.env.)
+    local_ports = {str(t.local_port) for t in tunnels.values()}
+    if stack.get("DB_PORT", "").strip() in local_ports:
         return "prod"
-    if local_port in stack.get("DB_URL", ""):
+    db_url = stack.get("DB_URL", "")
+    if any(port in db_url for port in local_ports):
         return "prod"
     db_host = stack.get("DB_HOST", "").strip().lower()
     if db_host and db_host not in _LOCAL_HOSTS:
@@ -150,19 +154,67 @@ def _autowire_tunnel(tunnel: SshTunnelConfig, workspace_root: Path) -> SshTunnel
     return replace(tunnel, host=host)
 
 
-def _build_injected_env(tunnel: SshTunnelConfig) -> dict[str, str]:
-    """DB env pointing the service at the tunnel, creds from the secret."""
-    env = {"DB_HOST": "localhost", "DB_PORT": str(tunnel.local_port)}
+def _expand_tunnel_placeholders(value: str, tunnel: SshTunnelConfig) -> str:
+    """``${localPort}``/``${localHost}`` in a tunnel's env templates."""
+    return value.replace("${localPort}", str(tunnel.local_port)).replace(
+        "${localHost}", "localhost"
+    )
+
+
+def _build_injected_env(tunnel: SshTunnelConfig, *, legacy: bool) -> dict[str, str]:
+    """Env one tunnel contributes to the service.
+
+    Legacy (singular ``sshTunnel``) keeps the implicit contract: DB_HOST/
+    DB_PORT plus the default creds mapping. Map (``sshTunnels``) entries
+    inject ONLY what they declare: their ``env`` templates, plus ``injectEnv``
+    fields read from ``credentialsSecret``.
+    """
+    env: dict[str, str] = {}
+    if legacy:
+        env["DB_HOST"] = "localhost"
+        env["DB_PORT"] = str(tunnel.local_port)
+    for key, template in tunnel.env.items():
+        env[key] = _expand_tunnel_placeholders(str(template), tunnel)
     if tunnel.credentials_secret:
         from foundry_cli.core.aws import get_secret_json
 
         secret = get_secret_json(tunnel.credentials_secret, region=tunnel.aws_region)
-        mapping = {**_DEFAULT_CREDS_MAPPING, **tunnel.inject_env}
+        mapping = {**(_DEFAULT_CREDS_MAPPING if legacy else {}), **tunnel.inject_env}
         for env_var, secret_field in mapping.items():
             value = secret.get(secret_field)
             if value is not None:
                 env[env_var] = str(value)
     return env
+
+
+def _merge_tunnel_envs(
+    tunnels: dict[str, SshTunnelConfig], *, legacy: bool
+) -> dict[str, str]:
+    """Compose all tunnels' contributed env, failing loudly on collisions."""
+    merged: dict[str, str] = {}
+    owner: dict[str, str] = {}
+    for name, tunnel in tunnels.items():
+        for key, value in _build_injected_env(tunnel, legacy=legacy).items():
+            if key in owner:
+                raise FoundryError(
+                    f"Env var '{key}' is injected by both tunnel "
+                    f"'{owner[key]}' and tunnel '{name}' — rename one side's "
+                    "env/injectEnv key."
+                )
+            merged[key] = value
+            owner[key] = name
+    return merged
+
+
+def _check_local_port_collisions(tunnels: dict[str, SshTunnelConfig]) -> None:
+    seen: dict[int, str] = {}
+    for name, tunnel in tunnels.items():
+        if tunnel.local_port in seen:
+            raise FoundryError(
+                f"Tunnels '{seen[tunnel.local_port]}' and '{name}' both use "
+                f"localPort {tunnel.local_port} — every tunnel needs its own."
+            )
+        seen[tunnel.local_port] = name
 
 
 def prepare_service_for_dev(
@@ -183,15 +235,19 @@ def prepare_service_for_dev(
     cfg = service.config
     file_env = load_env_files(workspace_root)
     stack = {**cfg.env, **file_env}
-    mode = resolve_dev_target(stack, cfg.ssh_tunnel)
+    mode = resolve_dev_target(stack, cfg.ssh_tunnels)
 
-    if mode == "local" or cfg.ssh_tunnel is None:
+    if mode == "local" or not cfg.ssh_tunnels:
         env = {**cfg.env, **file_env, "FOUNDRY_DEV_MODE": "local"}
-        new_cfg = replace(cfg, env=env, ssh_tunnel=None)
+        new_cfg = replace(cfg, env=env, ssh_tunnels={})
         return replace(service, config=new_cfg), "local", ()
 
-    tunnel = _autowire_tunnel(cfg.ssh_tunnel, workspace_root)
-    injected = _build_injected_env(tunnel)
+    _check_local_port_collisions(cfg.ssh_tunnels)
+    tunnels = {
+        name: _autowire_tunnel(t, workspace_root)
+        for name, t in cfg.ssh_tunnels.items()
+    }
+    injected = _merge_tunnel_envs(tunnels, legacy=cfg.ssh_tunnels_legacy)
     env = {
         **cfg.env,
         **cfg.dev_prod_guard_env,
@@ -199,7 +255,7 @@ def prepare_service_for_dev(
         **file_env,
         "FOUNDRY_DEV_MODE": "prod",
     }
-    new_cfg = replace(cfg, env=env, ssh_tunnel=tunnel)
+    new_cfg = replace(cfg, env=env, ssh_tunnels=tunnels)
     injected_keys = tuple(sorted({*cfg.dev_prod_guard_env, *injected}))
     return replace(service, config=new_cfg), "prod", injected_keys
 

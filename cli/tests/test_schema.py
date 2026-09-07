@@ -85,6 +85,31 @@ def test_full_run_dev_service_validates(validator: Draft7Validator) -> None:
     assert _errors(validator, doc) == []
 
 
+def test_multi_tunnel_service_validates(validator: Draft7Validator) -> None:
+    doc = {
+        "schemaVersion": "0.7.0",
+        "name": "acme-svc",
+        "services": {
+            "api": {
+                "sshTunnels": {
+                    "authService": {
+                        "localPort": 18080, "remoteHost": "auth.internal",
+                        "remotePort": 443, "host": "${BASTION_HOST}",
+                        "env": {"AUTH_BASE_URL": "http://localhost:${localPort}"},
+                    },
+                    "db": {
+                        "localPort": 15432, "remoteHost": "${DB_HOST}",
+                        "remotePort": 5432, "host": "${BASTION_HOST}",
+                        "credentialsSecret": "acme-prod/api/db",
+                        "injectEnv": {"DB_USER": "username"},
+                    },
+                }
+            }
+        },
+    }
+    assert _errors(validator, doc) == []
+
+
 def test_legacy_string_healthcheck_still_accepted(validator: Draft7Validator) -> None:
     doc = {
         "schemaVersion": "0.7.0",

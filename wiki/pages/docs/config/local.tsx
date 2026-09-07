@@ -68,6 +68,52 @@ FOUNDRY_DEV_TARGET=local`}</code></pre>
           the service process (never written to disk).
         </p>
 
+        <h2>Multiple tunnels per service</h2>
+        <p>
+          A service that needs several tunnels at once (an auth service plus two databases, say)
+          declares a named <code>sshTunnels</code> map instead of the singular{" "}
+          <code>sshTunnel</code>. All tunnels open in parallel before the service starts —
+          all-or-nothing: if any fails, the rest are closed and the service does not start.
+          Map entries inject <strong>only what they declare</strong>: an <code>env</code> block
+          (with <code>{"${localPort}"}</code>/<code>{"${localHost}"}</code> expansion) plus{" "}
+          <code>injectEnv</code> fields read from <code>credentialsSecret</code>. The legacy
+          singular form keeps its implicit <code>DB_HOST</code>/<code>DB_PORT</code> and default
+          credential injection; declaring both forms is an error.
+        </p>
+        <pre><code>{`services:
+  api:
+    sshTunnels:
+      authService:
+        localPort: 18080
+        remoteHost: auth.internal
+        remotePort: 443
+        host: \${BASTION_HOST}
+        env:
+          AUTH_BASE_URL: http://localhost:\${localPort}
+      db:                        # the entry named "db" is what
+        localPort: 15432         # \`foundry db\` migrations tunnel through
+        remoteHost: \${DB1_HOST}
+        remotePort: 5432
+        host: \${BASTION_HOST}
+        credentialsSecret: acme-prod/api/db1
+        env: { DB1_HOST: localhost, DB1_PORT: "\${localPort}" }
+        injectEnv: { DB1_USER: username, DB1_PASSWORD: password }
+      replicaDb:
+        localPort: 15433
+        remoteHost: \${DB2_HOST}
+        remotePort: 5432
+        host: \${BASTION_HOST}
+        credentialsSecret: acme-prod/api/db2
+        env: { DB2_PORT: "\${localPort}" }
+        injectEnv: { DB2_USER: username, DB2_PASSWORD: password }`}</code></pre>
+        <p>
+          Every tunnel needs its own <code>localPort</code>, and two tunnels may not inject the
+          same env var — both are hard errors before anything connects. In{" "}
+          <code>config.yml</code>, <code>sshTunnels</code> overrides merge <em>by name</em>: a
+          name mapped to an object replaces that tunnel, a name mapped to <code>null</code>{" "}
+          removes it, and <code>sshTunnels: false</code> disables them all.
+        </p>
+
         <h2>Multi-repo workspaces and profiles</h2>
         <p>
           A platform{"'"}s ops repo can carry a master <code>foundry.workspace.json</code> at its

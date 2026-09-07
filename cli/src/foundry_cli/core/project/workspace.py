@@ -523,12 +523,16 @@ def _apply_local_service_overrides(
     """Apply overrides from ``.foundry/config.defaults.yml`` + ``config.yml``.
 
     Supported per-service overrides:
-      services.<name>.sshTunnel
-        - dict: full tunnel config
-        - null/false: disable any manifest tunnel
-            services.<name>.run.strictMode
-                - bool: enables/disables strict mode
-                - object: { enabled?: bool, strictHealthPorts?: bool }
+      services.<name>.sshTunnel  (legacy single-tunnel form)
+        - dict: full tunnel config (keeps the implicit DB_* injection)
+        - null/false: disable ALL manifest tunnels
+      services.<name>.sshTunnels (named-map form)
+        - null/false: disable ALL manifest tunnels
+        - dict merged BY NAME over the manifest map: a name -> dict replaces
+          that tunnel entirely; a name -> null removes it
+      services.<name>.run.strictMode
+        - bool: enables/disables strict mode
+        - object: { enabled?: bool, strictHealthPorts?: bool }
     """
     local_cfg = _load_local_config_yml(foundry_dir)
     if not local_cfg:
@@ -551,16 +555,47 @@ def _apply_local_service_overrides(
             continue
 
         cfg = svc.config
+        if "sshTunnel" in override and "sshTunnels" in override:
+            raise FoundryError(
+                f"Invalid .foundry/config.yml for service '{svc.name}': "
+                "declare 'sshTunnel' (legacy) OR 'sshTunnels', not both."
+            )
         if "sshTunnel" in override:
             raw_tunnel = override.get("sshTunnel")
             if raw_tunnel in (None, False):
-                cfg = replace(cfg, ssh_tunnel=None)
+                cfg = replace(cfg, ssh_tunnels={}, ssh_tunnels_legacy=False)
             elif isinstance(raw_tunnel, dict):
-                cfg = replace(cfg, ssh_tunnel=SshTunnelConfig.from_dict(raw_tunnel))
+                cfg = replace(
+                    cfg,
+                    ssh_tunnels={"default": SshTunnelConfig.from_dict(raw_tunnel)},
+                    ssh_tunnels_legacy=True,
+                )
             else:
                 raise FoundryError(
                     f"Invalid .foundry/config.yml for service '{svc.name}': "
                     "'sshTunnel' must be an object, null, or false."
+                )
+        elif "sshTunnels" in override:
+            raw_tunnels = override.get("sshTunnels")
+            if raw_tunnels in (None, False):
+                cfg = replace(cfg, ssh_tunnels={}, ssh_tunnels_legacy=False)
+            elif isinstance(raw_tunnels, dict):
+                merged = dict(cfg.ssh_tunnels)
+                for tunnel_name, raw in raw_tunnels.items():
+                    if raw is None:
+                        merged.pop(tunnel_name, None)
+                    elif isinstance(raw, dict):
+                        merged[tunnel_name] = SshTunnelConfig.from_dict(raw)
+                    else:
+                        raise FoundryError(
+                            f"Invalid .foundry/config.yml for service '{svc.name}': "
+                            f"sshTunnels.{tunnel_name} must be an object or null."
+                        )
+                cfg = replace(cfg, ssh_tunnels=merged, ssh_tunnels_legacy=False)
+            else:
+                raise FoundryError(
+                    f"Invalid .foundry/config.yml for service '{svc.name}': "
+                    "'sshTunnels' must be a mapping, null, or false."
                 )
 
         if "run" in override:
