@@ -78,5 +78,6 @@ Thumbs.db
 # (cli/package/target/) stay ignored.
 !cli/package/
 !cli/package/package.py
+!cli/package/install.sh
 !cli/package/installer/
 !cli/package/installer/foundry-cli-installer-setup.iss

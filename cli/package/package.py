@@ -285,11 +285,17 @@ def _platform_key() -> str:
         sysname = system
     return f"{sysname}-{arch}"
 
-def _zip_dir_to(dst_zip: Path, src_dir: Path) -> None:
-    # create zip archive of src_dir contents at dst_zip (archive the directory contents, not a parent folder)
-    base = str(dst_zip.with_suffix(""))
-    shutil.make_archive(base, "zip", root_dir=str(src_dir), base_dir=".")
-    _styled_log("INFO", f"Created zip {dst_zip}")
+def _archive_dir_to(dst_archive: Path, src_dir: Path) -> None:
+    # Archive src_dir contents (not a parent folder). Windows ships a zip;
+    # POSIX ships a tar.gz — zipfile does not preserve the executable bit,
+    # so a zipped macOS/Linux build would need a manual chmod after extract.
+    if dst_archive.name.endswith(".tar.gz"):
+        base = str(dst_archive)[: -len(".tar.gz")]
+        shutil.make_archive(base, "gztar", root_dir=str(src_dir), base_dir=".")
+    else:
+        base = str(dst_archive.with_suffix(""))
+        shutil.make_archive(base, "zip", root_dir=str(src_dir), base_dir=".")
+    _styled_log("INFO", f"Created archive {dst_archive}")
 
 def create_release_target(version: str, dist_dir: Path, installer_path: Optional[Path]) -> Path:
     """
@@ -305,16 +311,17 @@ def create_release_target(version: str, dist_dir: Path, installer_path: Optional
     version_dir.mkdir(parents=True, exist_ok=True)
 
     platform_key = _platform_key()
-    zip_name = f"foundrycli-{version}-{platform_key}.zip"
-    zip_path = version_dir / zip_name
+    ext = ".zip" if platform.system() == "Windows" else ".tar.gz"
+    archive_name = f"foundrycli-{version}-{platform_key}{ext}"
+    archive_path = version_dir / archive_name
 
-    _styled_step(f"Zipping dist contents to {zip_path}", version=version)
-    _zip_dir_to(zip_path, dist_dir)
+    _styled_step(f"Archiving dist contents to {archive_path}", version=version)
+    _archive_dir_to(archive_path, dist_dir)
 
     _styled_step("Computing checksum", version=version)
-    sha = _sha256_of_file(zip_path)
-    sha_file = version_dir / (zip_name + ".sha256")
-    sha_file.write_text(f"{sha}  {zip_name}", encoding="utf-8")
+    sha = _sha256_of_file(archive_path)
+    sha_file = version_dir / (archive_name + ".sha256")
+    sha_file.write_text(f"{sha}  {archive_name}", encoding="utf-8")
     _styled_log("INFO", f"Wrote checksum to {sha_file}")
 
     if installer_path and installer_path.exists():
@@ -361,23 +368,27 @@ def main():
     # run pyinstaller first so we can update the .iss to point to the actual dist
     dist_dir = run_pyinstaller(version)
 
-    # compute a path relative to the .iss location (so the .iss keeps portable relative path)
-    rel = os.path.relpath(dist_dir, start=ISS_FILE.parent)
-    # convert to backslashes for Inno Setup and append wildcard
-    rel_win = str(Path(rel)).replace("/", "\\")
-    if not rel_win.endswith("*"):
-        if rel_win.endswith("\\"):
-            rel_win = rel_win + "*"
-        else:
-            rel_win = rel_win + "\\*"
+    installer = None
+    if platform.system() == "Windows":
+        # compute a path relative to the .iss location (so the .iss keeps portable relative path)
+        rel = os.path.relpath(dist_dir, start=ISS_FILE.parent)
+        # convert to backslashes for Inno Setup and append wildcard
+        rel_win = str(Path(rel)).replace("/", "\\")
+        if not rel_win.endswith("*"):
+            if rel_win.endswith("\\"):
+                rel_win = rel_win + "*"
+            else:
+                rel_win = rel_win + "\\*"
 
-    # now update the .iss with both version and SourceFolder
-    update_iss_version(version=version, source_folder=rel_win)
+        # now update the .iss with both version and SourceFolder
+        update_iss_version(version=version, source_folder=rel_win)
 
-    # compile installer (if ISCC available). Capture produced installer path when possible.
-    installer = run_inno_setup()
+        # compile installer (if ISCC available). Capture produced installer path when possible.
+        installer = run_inno_setup()
+    else:
+        _styled_log("INFO", f"Non-Windows host ({platform.system()}) — skipping Inno Setup installer.")
 
-    # create release/target artifacts: zip of dist, checksum, and include installer
+    # create release/target artifacts: archive of dist, checksum, and include installer
     create_release_target(version=version, dist_dir=dist_dir, installer_path=installer)
 
     _styled_final("Build complete.")

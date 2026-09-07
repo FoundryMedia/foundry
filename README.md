@@ -167,6 +167,16 @@ After installation, open a **new** terminal and verify:
 foundry --version
 ```
 
+### Option 1b: macOS (Apple Silicon)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/FoundryMedia/foundry/release/cli/package/install.sh | sh
+```
+
+Installs the latest release to `~/.foundry/cli/<version>` and links
+`~/.foundry/bin/foundry` (the script prints the PATH line to add if needed).
+Re-run the same command to update.
+
 ### Option 2: Manual Install (Portable)
 
 1. Download `foundrycli-{version}-windows-amd64.zip` from [GitHub Releases](https://github.com/FoundryMedia/foundry/releases/latest)

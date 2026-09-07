@@ -9,15 +9,22 @@ from typing import Any
 from foundry_cli.core.errors import FoundryError
 
 
-def _localappdata() -> Path:
-    v = os.environ.get("LOCALAPPDATA")
-    if not v:
-        raise FoundryError("LOCALAPPDATA is not set; cannot manage aliases on this system.")
-    return Path(v)
+def _is_windows() -> bool:
+    return os.name == "nt"
 
 
 def foundry_data_dir() -> Path:
-    return _localappdata() / "Foundry"
+    """Per-user Foundry data directory.
+
+    Windows: %LOCALAPPDATA%\\Foundry. Elsewhere (macOS/Linux): ~/.foundry —
+    the same root the CLI already uses for credentials and cache.
+    """
+    if _is_windows():
+        v = os.environ.get("LOCALAPPDATA")
+        if not v:
+            raise FoundryError("LOCALAPPDATA is not set; cannot manage aliases on this system.")
+        return Path(v) / "Foundry"
+    return Path.home() / ".foundry"
 
 
 def aliases_file() -> Path:
