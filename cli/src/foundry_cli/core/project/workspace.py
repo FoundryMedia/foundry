@@ -29,6 +29,9 @@ class FoundryWorkspace:
 
     root: Path
     manifests: tuple[ProjectManifest, ...]
+    # Human-readable discovery notices (a declared service whose directory is
+    # missing, etc.) for the caller to surface — discovery must never be silent.
+    notices: tuple[str, ...] = ()
 
 
 WORKSPACE_FILE_NAME = "foundry.workspace.json"
@@ -355,19 +358,29 @@ _STACK_TYPE_TO_KIND = {
 }
 
 
-def discover_manifest_services(manifest: ProjectManifest) -> list[DiscoveredService]:
+def discover_manifest_services(
+    manifest: ProjectManifest,
+    notices: list[str] | None = None,
+) -> list[DiscoveredService]:
     """Resolve services straight from the manifest's service declarations.
 
     Multi-repo manifests (schemaVersion >= 0.7.0) place each service at
     ``services.<name>.path`` inside its own repository — there is no ``apps/``
     directory to scan. A declared service whose directory is missing is
-    skipped so a partially-checked-out workspace still loads.
+    skipped (so a partially-checked-out workspace still loads) — but never
+    silently: the skip is appended to ``notices`` when given.
     """
     base = manifest_workspace_root(manifest.path)
     services: list[DiscoveredService] = []
     for name, cfg in manifest.services_config.items():
         svc_dir = (base / Path(cfg.effective_path)).resolve()
         if not svc_dir.is_dir():
+            if notices is not None:
+                notices.append(
+                    f"'{name}' is declared in foundry.json but its path "
+                    f"'{cfg.effective_path}' does not exist — skipped "
+                    "(run `foundry sync` to see drift)"
+                )
             continue
         services.append(
             DiscoveredService(
@@ -689,6 +702,7 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
     if ws_data and isinstance(ws_data.get("services"), dict):
         path_to_key = _build_path_to_key_map(workspace_root, ws_data["services"])
 
+    notices: list[str] = []
     apps_root = workspace_root / Path(manifest.services_dir_name)
     if apps_root.is_dir():
         # Monorepo layout: scan the services directory (apps/ by default).
@@ -699,7 +713,7 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
     else:
         # Multi-repo layout (v0.7.0): no apps/ dir — each declared service
         # resolves via its own `path` relative to the manifest.
-        traditional_services = discover_manifest_services(manifest)
+        traditional_services = discover_manifest_services(manifest, notices)
         if not traditional_services:
             # Nothing declared/resolvable either way: raise the original,
             # descriptive services-directory error.
@@ -714,11 +728,16 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
             dir_name = Path(svc_cfg.effective_path).name or workspace_root.name
             path_to_key.setdefault(dir_name, svc_name)
     
-    # Filter to only non-Node services (Spring Boot, FastAPI)
-    non_node_services = [
-        s for s in traditional_services 
-        if s.runtime.runtime not in (ServiceRuntime.nextjs, ServiceRuntime.unknown)
-    ]
+    # Every DECLARED service is kept, whatever its detected runtime. The old
+    # filter dropped declared nextjs/unknown-runtime services on the
+    # assumption Node package discovery below would re-find them — it does
+    # not in an aggregator directory with no root package.json, and it never
+    # did for a package without a `<command>` script. An nx frontend
+    # (unknown runtime: no vite.config at its root) simply vanished: 7
+    # declared, 6 run, no warning. Node-discovered entries still win the
+    # name-dedupe below (dependency order); anything not runnable now gets a
+    # runner that says so instead of disappearing.
+    declared_services = list(traditional_services)
 
     # Discover Node packages that have the requested script
     node_packages = find_packages_with_script(workspace_root, command)
@@ -769,8 +788,8 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
     # (foundry-app's `web` and `desktop` both live in app/, differing only in
     # which package.json script they run).
     node_names = {s.name for s in node_services}
-    non_node_services = [s for s in non_node_services if s.name not in node_names]
-    all_services = node_services + non_node_services
+    declared_services = [s for s in declared_services if s.name not in node_names]
+    all_services = node_services + declared_services
 
     # Filter out disabled services
     all_services = [s for s in all_services if s.config.enabled]
@@ -789,7 +808,9 @@ def load_workspace(start: Path | None = None, command: str = "dev") -> tuple[Fou
                     parent_service=svc.name,
                 ))
 
-    ws = FoundryWorkspace(root=workspace_root, manifests=(manifest,))
+    ws = FoundryWorkspace(
+        root=workspace_root, manifests=(manifest,), notices=tuple(notices)
+    )
     return ws, services_root, all_services, sidecars
 
 

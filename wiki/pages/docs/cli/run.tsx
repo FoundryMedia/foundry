@@ -45,6 +45,20 @@ foundry run [-d|--debug] build [--filter NAMES]`}</code></pre>
           </tbody>
         </table>
 
+        <h2>What runs, and how <code>run.script</code> is interpreted</h2>
+        <p>
+          Every service <strong>declared</strong> in the manifest runs (or fails visibly with the
+          reason) — a declared service is never silently skipped, and a declared path that does
+          not exist prints a <em>Note</em>. The launch command comes from the detected runtime
+          (Spring Boot → the Maven wrapper, Vite/Next → the package manager{"'"}s{" "}
+          <code>dev</code> script) unless <code>run.script</code> says otherwise:
+        </p>
+        <ul>
+          <li><strong>Spring Boot:</strong> <code>run.script</code> is the exact command, run verbatim (<code>run.args</code> appended).</li>
+          <li><strong>Anything with a <code>package.json</code>:</strong> if <code>run.script</code> names a package.json script, it runs through the package manager (<code>npm run &lt;name&gt;</code>); otherwise it is run verbatim from the service directory with <code>node_modules/.bin</code> on <code>PATH</code> — so an nx workspace with no <code>dev</code> script works with <code>{`"script": "nx serve enterprise"`}</code>.</li>
+          <li><strong>No detected runtime, no package.json:</strong> <code>run.script</code> is run verbatim; readiness is a TCP probe on <code>run.port</code> when set.</li>
+        </ul>
+
         <h2>Headless mode and exit codes</h2>
         <p>
           In a script, CI job, or pipe, <code>run dev</code> automatically drops the full-screen

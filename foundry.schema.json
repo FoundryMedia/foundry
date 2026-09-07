@@ -745,7 +745,7 @@
           ]
         },
         "script": {
-          "description": "Explicit start command for local development, overriding the framework's default runner. Spring Boot services run this VERBATIM (nothing injected or dropped; run.args are appended; 'debug'/'strictHealthPorts' injection is skipped with a warning). Node services treat it as the package.json script name to invoke.",
+          "description": "Explicit start command for local development, overriding the framework's default runner. Spring Boot services run this VERBATIM (nothing injected or dropped; run.args are appended; 'debug'/'strictHealthPorts' injection is skipped with a warning). Node services (anything with a package.json): if the value names a package.json script it runs via the package manager (`npm run <name>`); otherwise it is run VERBATIM from the service directory with node_modules/.bin on PATH (e.g. \"nx serve enterprise\"). A service with no detected runtime and no package.json runs it verbatim. A declared service is never silently skipped: without a runnable script it shows up FAILED with the reason.",
           "type": "string"
         },
         "debug": {

@@ -14,8 +14,35 @@ from foundry_cli.core.services.runners.migration import MigrationAwareRunner
 
 
 class _UnsupportedServiceRunner(ServiceRunner):
+    """A declared service Foundry has no way to run — says so, loudly.
+
+    Before this it started nothing and emitted nothing: a permanent spinner
+    in the TUI, and in headless mode a service that never resolved at all.
+    """
+
+    def __init__(self, service, *, command: str = "dev") -> None:
+        super().__init__(service, command=command)
+        import asyncio
+
+        self._status_queue: "asyncio.Queue" = asyncio.Queue()
+
     async def start(self) -> None:
-        return
+        from foundry_cli.core.services.runners.base import ServiceStatus, ServiceStatusEvent
+
+        evidence = getattr(self.service.runtime, "evidence", "no runtime detected")
+        await self._status_queue.put(
+            ServiceStatusEvent(
+                self.name, ServiceStatus.failed,
+                detail="No runner for this service",
+                error=(
+                    f"Cannot run '{self.name}': {evidence}. Set run.script in "
+                    "foundry.json to the command that starts it (run verbatim from "
+                    f"the service directory), or add a package.json '{self._command}' "
+                    "script."
+                ),
+                level="ERROR",
+            )
+        )
 
     async def stop(self) -> None:
         return
@@ -25,6 +52,12 @@ class _UnsupportedServiceRunner(ServiceRunner):
             if False:
                 yield None
         return _empty()
+
+    def status_events(self):
+        async def _gen():
+            while True:
+                yield await self._status_queue.get()
+        return _gen()
 
 
 def create_runner(
@@ -101,6 +134,34 @@ def create_runner(
             debug=debug,
             port=cfg.port,
             command=command,
+            args=cfg.args,
+            env=cfg.env,
+        )
+
+    # Runtime not detected (no pom.xml / vite|next config / uvicorn evidence).
+    # An nx workspace, a plain node app, anything with a package.json still
+    # runs through the Node runner (package.json script, or run.script
+    # verbatim). A bare run.script runs verbatim. Only a service with NO
+    # way to start ends up unsupported — and that one now fails loudly.
+    elif (service.path / "package.json").is_file():
+        runner = NodeServiceRunner(
+            service,
+            debug=debug,
+            port=cfg.port,
+            command=command,
+            script=cfg.script,
+            args=cfg.args,
+            env=cfg.env,
+        )
+    elif cfg.script:
+        from foundry_cli.core.services.runners.script import ScriptServiceRunner
+
+        runner = ScriptServiceRunner(
+            service,
+            debug=debug,
+            command=command,
+            script=cfg.script,
+            port=cfg.port,
             args=cfg.args,
             env=cfg.env,
         )

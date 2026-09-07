@@ -135,6 +135,7 @@ def _run_services_ui(
     else:
         try:
             workspace, services_root, services, sidecars = load_workspace(command=command)
+            notices.extend(workspace.notices)
         except FoundryError:
             # Not inside a repo with a manifest — fall back to the cross-repo
             # workspace (everything discoverable), if one is findable.

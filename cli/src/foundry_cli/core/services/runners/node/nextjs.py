@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import re
+import shlex
 import socket
 from pathlib import Path
 from typing import Literal
@@ -135,7 +136,12 @@ class NodeServiceRunner(ProcessBackedRunner):
         self._port = port
         # package.json script to invoke; defaults to the run command name.
         # A manifest `run.script` overrides it (e.g. "tauri" + args ["dev"]).
+        # When the manifest's script is NOT a package.json script name it is
+        # run VERBATIM as a command (e.g. "nx serve enterprise") with
+        # node_modules/.bin on PATH — so a frontend with no `dev` script can
+        # still be launched.
         self._script = script or command
+        self._explicit_script = bool(script)
         self._args = args
         self._env = env or {}
         self._package_manager: PackageManager = "pnpm"
@@ -157,41 +163,75 @@ class NodeServiceRunner(ProcessBackedRunner):
             )
             return
 
-        # Check if the requested script exists
-        if not _has_script(package_json, self._script):
+        # Detect package manager and workspace root
+        self._package_manager = _detect_package_manager(self.cwd)
+        self._workspace_root = _find_workspace_root(self.cwd)
+
+        if _has_script(package_json, self._script):
+            # Try to extract port from script if not configured
+            if self._port is None:
+                scripts = _get_package_scripts(package_json)
+                script_content = scripts.get(self._script, "")
+                self._port = _extract_port_from_script(script_content)
+
+            # Build the command
+            if self._package_manager == "pnpm":
+                cmd = self._build_pnpm_command()
+            elif self._package_manager == "yarn":
+                cmd = self._build_yarn_command()
+            else:
+                cmd = self._build_npm_command()
+
+            run_env = {**os.environ, **self._env} if self._env else None
+
+            # Run from workspace root if we have one and using pnpm
+            cwd = self._workspace_root if self._workspace_root and self._package_manager == "pnpm" else self.cwd
+        elif self._explicit_script:
+            # Verbatim command mode: the manifest's run.script is not a
+            # package.json script name, so it IS the command. Mirror what
+            # `npm run` does for its scripts — node_modules/.bin (service +
+            # workspace root) first on PATH — so `nx serve enterprise` works.
+            try:
+                cmd = shlex.split(self._script, posix=(sys.platform != "win32"))
+            except ValueError as e:
+                await self._status_queue.put(
+                    ServiceStatusEvent(
+                        self.name, ServiceStatus.failed,
+                        detail="Invalid run.script",
+                        error=f"Could not parse run.script: {e}",
+                        level="ERROR",
+                    )
+                )
+                return
+            cmd.extend(self._args)
+            run_env = {**os.environ, **self._env}
+            run_env["PATH"] = self._bin_path(run_env.get("PATH", ""))
+            cwd = self.cwd
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.starting,
+                    detail=(
+                        f"'{self._script.split()[0]}' is not a package.json script — "
+                        "running run.script verbatim"
+                    ),
+                    level="DEBUG",
+                )
+            )
+        else:
             await self._status_queue.put(
                 ServiceStatusEvent(
                     self.name, ServiceStatus.failed,
                     detail=f"No '{self._script}' script in package.json",
-                    error=f"package.json does not have a '{self._script}' script.",
+                    error=(
+                        f"package.json has no '{self._script}' script. Add one, or "
+                        "set run.script in foundry.json to the command to launch "
+                        "(e.g. \"nx serve enterprise\")."
+                    ),
                     level="ERROR",
                 )
             )
             return
 
-        # Detect package manager and workspace root
-        self._package_manager = _detect_package_manager(self.cwd)
-        self._workspace_root = _find_workspace_root(self.cwd)
-
-        # Try to extract port from script if not configured
-        if self._port is None:
-            scripts = _get_package_scripts(package_json)
-            script_content = scripts.get(self._script, "")
-            self._port = _extract_port_from_script(script_content)
-
-        # Build the command
-        if self._package_manager == "pnpm":
-            cmd = self._build_pnpm_command()
-        elif self._package_manager == "yarn":
-            cmd = self._build_yarn_command()
-        else:
-            cmd = self._build_npm_command()
-
-        run_env = {**os.environ, **self._env} if self._env else None
-        
-        # Run from workspace root if we have one and using pnpm
-        cwd = self._workspace_root if self._workspace_root and self._package_manager == "pnpm" else self.cwd
-        
         proc = await self._spawn(cmd, cwd=cwd, env=run_env)
 
         # Start monitor immediately - emits "failed" if process ever exits
@@ -243,6 +283,14 @@ class NodeServiceRunner(ProcessBackedRunner):
                             level="INFO",
                         )
                     )
+
+    def _bin_path(self, path: str) -> str:
+        """PATH with the service's (and workspace root's) node_modules/.bin first."""
+        bins = [self.cwd / "node_modules" / ".bin"]
+        if self._workspace_root and self._workspace_root != self.cwd:
+            bins.append(self._workspace_root / "node_modules" / ".bin")
+        parts = [str(b) for b in bins if b.is_dir()]
+        return os.pathsep.join([*parts, path]) if parts else path
 
     def _build_pnpm_command(self) -> list[str]:
         """Build pnpm run command, using filter for monorepo."""
