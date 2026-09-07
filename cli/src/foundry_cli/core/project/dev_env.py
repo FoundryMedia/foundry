@@ -26,13 +26,17 @@ keeps working with zero AWS involvement.
 
 from __future__ import annotations
 
+import logging
 import os
+from contextlib import suppress
 from dataclasses import replace
 from pathlib import Path
 
 from foundry_cli.core.errors import FoundryError
 from foundry_cli.core.project.manifest import SshTunnelConfig
 from foundry_cli.core.project.workspace import DiscoveredService
+
+logger = logging.getLogger(__name__)
 
 # Default injected env-var -> credentials-secret field mapping. A manifest's
 # sshTunnel.injectEnv extends/overrides this (ENV_VAR -> secret field).
@@ -128,6 +132,20 @@ def _autowire_tunnel(tunnel: SshTunnelConfig, workspace_root: Path) -> SshTunnel
                 )
             key_path.parent.mkdir(parents=True, exist_ok=True)
             key_path.write_text(pem, encoding="utf-8", newline="\n")
+            with suppress(OSError):
+                os.chmod(key_path, 0o600)
+            # Private key material in the working tree must never be
+            # committable — cover it in .gitignore or warn loudly.
+            try:
+                from foundry_cli.core.project.dotfoundry import ensure_path_ignored
+
+                ensure_path_ignored(workspace_root, key_path)
+            except OSError:
+                logger.warning(
+                    "Could not update .gitignore to cover the tunnel key at %s "
+                    "— make sure it is git-ignored before committing.",
+                    key_path,
+                )
 
     return replace(tunnel, host=host)
 

@@ -27,8 +27,9 @@ FOUNDRY_GENERATED_DIR = "generated"
 class FoundryProjectState:
     """Detection result for the state of a Foundry project directory.
 
-    Checks for the presence of ``foundry.json`` and ``.foundry/`` at a given
-    root.  The four possible combinations drive ``foundry init`` behaviour:
+    Checks for a manifest (``.foundry/foundry.json`` or root ``foundry.json``)
+    and ``.foundry/`` at a given root.  The combinations drive ``foundry
+    init`` behaviour:
 
     - **fresh**: neither exists → full init needed
     - **needs_upgrade**: manifest exists, no ``.foundry/`` → create the dir
@@ -78,16 +79,24 @@ def detect_project_state(directory: Path | None = None) -> FoundryProjectState:
     """
     root = (directory or Path.cwd()).resolve()
 
-    manifest_path = root / "foundry.json"
     foundry_dir_path = root / FOUNDRY_DIR_NAME
 
-    has_manifest = manifest_path.is_file()
+    # Same precedence as workspace.find_manifest_path: .foundry/foundry.json
+    # (the multi-repo convention) wins over a root-level foundry.json (the
+    # legacy/monorepo location).
+    manifest_path: Path | None = None
+    for candidate in (foundry_dir_path / "foundry.json", root / "foundry.json"):
+        if candidate.is_file():
+            manifest_path = candidate
+            break
+
+    has_manifest = manifest_path is not None
     has_foundry_dir = foundry_dir_path.is_dir()
 
     return FoundryProjectState(
         has_manifest=has_manifest,
         has_foundry_dir=has_foundry_dir,
-        manifest_path=manifest_path if has_manifest else None,
+        manifest_path=manifest_path,
         foundry_dir_path=foundry_dir_path if has_foundry_dir else None,
         root=root,
     )
@@ -148,20 +157,61 @@ def ensure_foundry_dir(root: Path) -> Path:
     return foundry_dir
 
 
-# Content of .foundry/.gitignore.  Ignore everything local, explicitly
-# un-ignore the files that should be committed.
-_NESTED_GITIGNORE = """\
-# Foundry local files — DO NOT EDIT
-# Managed by `foundry sync`.  Only workspace.yml is committed.
+# Managed block of .foundry/.gitignore: local-only files the CLI itself
+# creates.  Everything outside the markers is user content and is preserved.
+_NESTED_GITIGNORE_BEGIN = "# --- foundry managed (do not edit between markers) ---"
+_NESTED_GITIGNORE_END = "# --- end foundry managed ---"
+_NESTED_GITIGNORE_ENTRIES = (
+    "config.yml",
+    "dev.local.env",
+    "*.local.env",
+    "*.pem",
+)
 
-config.yml
-"""
+# Legacy (pre-managed-block) content this function used to write verbatim —
+# recognized and migrated instead of duplicated.
+_LEGACY_NESTED_LINES = frozenset({
+    "# Foundry local files — DO NOT EDIT",
+    "# Managed by `foundry sync`.  Only workspace.yml is committed.",
+    "config.yml",
+})
 
 
 def _ensure_nested_gitignore(foundry_dir: Path) -> None:
-    """Write (or overwrite) ``.foundry/.gitignore``."""
+    """Ensure ``.foundry/.gitignore`` carries the managed ignore block.
+
+    Non-destructive: only the block between the managed markers is rewritten;
+    hand-added lines outside it survive every ``foundry init``/``sync``.
+    Legacy CLI-written content (the pre-marker format) is migrated into the
+    managed block.
+    """
     path = foundry_dir / ".gitignore"
-    path.write_text(_NESTED_GITIGNORE, encoding="utf-8")
+
+    preserved: list[str] = []
+    if path.exists():
+        in_managed = False
+        for line in path.read_text(encoding="utf-8").splitlines():
+            stripped = line.strip()
+            if stripped == _NESTED_GITIGNORE_BEGIN:
+                in_managed = True
+                continue
+            if stripped == _NESTED_GITIGNORE_END:
+                in_managed = False
+                continue
+            if in_managed or stripped in _LEGACY_NESTED_LINES:
+                continue
+            preserved.append(line)
+
+    # Drop leading/trailing blank runs left behind by the migration.
+    while preserved and not preserved[0].strip():
+        preserved.pop(0)
+    while preserved and not preserved[-1].strip():
+        preserved.pop()
+
+    lines = [_NESTED_GITIGNORE_BEGIN, *_NESTED_GITIGNORE_ENTRIES, _NESTED_GITIGNORE_END]
+    if preserved:
+        lines += ["", *preserved]
+    path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
 def ensure_gitignore_entry(root: Path) -> bool:
@@ -215,6 +265,51 @@ def ensure_gitignore_entry(root: Path) -> bool:
     return modified
 
 
+def ensure_path_ignored(root: Path, target: Path) -> bool:
+    """Best-effort: make sure *target* is covered by a ``.gitignore``.
+
+    Used for files the CLI writes that must never be committed (e.g. a
+    bastion private key fetched by ``run dev``).  If *target* lives inside
+    ``.foundry/`` the nested managed block already covers ``*.pem``; anything
+    else gets an explicit entry appended to the root ``.gitignore``.
+
+    Purely textual (no git invocation — the root may not even be a repo):
+    the entry is considered present if the exact relative path, its basename,
+    or a matching ``*.<suffix>`` glob already appears as a line.
+
+    Returns:
+        ``True`` if ``.gitignore`` was created or modified.
+    """
+    try:
+        rel = target.resolve().relative_to(root.resolve())
+    except ValueError:
+        return False  # outside the workspace — nothing sensible to ignore
+
+    rel_posix = rel.as_posix()
+    gitignore_path = root / ".gitignore"
+
+    existing: set[str] = set()
+    if gitignore_path.exists():
+        existing = {
+            line.strip().rstrip("/")
+            for line in gitignore_path.read_text(encoding="utf-8").splitlines()
+        }
+
+    candidates = {rel_posix, f"/{rel_posix}", target.name}
+    if target.suffix:
+        candidates.add(f"*{target.suffix}")
+    if existing & candidates:
+        return False
+
+    entry = (
+        "\n# foundry: local key material written by `foundry run dev` — never commit\n"
+        f"/{rel_posix}\n"
+    )
+    with gitignore_path.open("a", encoding="utf-8", newline="\n") as fh:
+        fh.write(entry)
+    return True
+
+
 __all__ = [
     "FOUNDRY_DIR_NAME",
     "FOUNDRY_CONFIG_FILENAME",
@@ -224,4 +319,5 @@ __all__ = [
     "detect_project_state",
     "ensure_foundry_dir",
     "ensure_gitignore_entry",
+    "ensure_path_ignored",
 ]

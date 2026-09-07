@@ -18,6 +18,9 @@ dependencies = [
   "sshtunnel>=0.4.0"
 ]
 
+[project.optional-dependencies]
+dev = ["pytest"]
+
 [project.scripts]
 foundry = "foundry_cli.cli:cli"
 

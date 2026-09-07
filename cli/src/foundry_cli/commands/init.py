@@ -286,7 +286,7 @@ def _handle_upgrade(
         state.root,
         state.manifest_path,
         foundry_dir,
-        force_runtime=True,
+        force=True,
     )
 
     click.echo()
@@ -459,7 +459,7 @@ def _handle_fresh_init(
         click.echo(click.style("  ✓ .gitignore updated", fg="green"))
 
     # Generate runtime + state
-    _generate_foundry_files(root, manifest_path, foundry_dir, force_runtime=True)
+    _generate_foundry_files(root, manifest_path, foundry_dir, force=True)
 
     click.echo()
     click.echo(click.style(f"Platform '{name}' initialized.", fg="green", bold=True))
@@ -536,13 +536,15 @@ def _run_init(
         _handle_existing(state, force=force)
         return
 
-    # Orphaned .foundry/ without a manifest
+    # Orphaned .foundry/ without a manifest (neither .foundry/foundry.json
+    # nor a root foundry.json exists)
     if state.is_orphaned:
         raise FoundryError(
-            "Found a .foundry/ directory but no foundry.json at "
+            "Found a .foundry/ directory but no manifest at "
             f"{state.root}.\n"
-            "This is an unexpected state. Remove .foundry/ and try again, "
-            "or create a foundry.json manually."
+            "Expected .foundry/foundry.json (multi-repo layout) or a "
+            "root-level foundry.json. Create one, or remove .foundry/ to "
+            "start fresh."
         )
 
     # Existing manifest, missing .foundry/ — upgrade path

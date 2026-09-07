@@ -48,7 +48,8 @@ def _run_sync(*, dry_run: bool = False) -> None:
 
     if not state.has_manifest:
         raise FoundryError(
-            "No foundry.json found in the current directory.\n"
+            "No manifest found in the current directory "
+            "(.foundry/foundry.json or foundry.json).\n"
             "Run 'foundry init' to create a new platform first."
         )
 
