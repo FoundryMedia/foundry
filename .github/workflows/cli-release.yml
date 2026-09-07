@@ -134,14 +134,16 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           V="${{ steps.ver.outputs.version }}"
-          ls -la assets/
+          ls -laR assets/
+          # Artifacts preserve the target/<version>/ directory level — glob
+          # the files inside it, never the directory itself.
           gh release create "v$V" -R "$GITHUB_REPOSITORY" \
             --title "Foundry CLI v$V" \
             --notes "Foundry CLI v$V
 
           Windows: run the installer (.exe). macOS (Apple Silicon):
           \`curl -fsSL https://raw.githubusercontent.com/$GITHUB_REPOSITORY/release/cli/package/install.sh | sh\`" \
-            assets/*
+            assets/*/*
 
       - name: Already released (no-op)
         if: steps.exists.outputs.exists == 'true'
