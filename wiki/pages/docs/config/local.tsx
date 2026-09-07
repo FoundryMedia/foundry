@@ -114,6 +114,46 @@ FOUNDRY_DEV_TARGET=local`}</code></pre>
           removes it, and <code>sshTunnels: false</code> disables them all.
         </p>
 
+        <h2>Bind address — loopback by default</h2>
+        <p>
+          Tunnels listen on <strong>loopback only</strong>: <code>127.0.0.1</code> plus{" "}
+          <code>::1</code> (so <code>-h localhost</code> works on dual-stack machines where{" "}
+          <code>localhost</code> resolves to <code>::1</code> first, e.g. macOS). Nothing else on
+          your network can reach the tunnelled service — the same default as{" "}
+          <code>ssh -L</code>. If something <em>off-host</em> must connect (a Docker container
+          reaching the tunnel via <code>host.docker.internal</code>), opt in per tunnel with{" "}
+          <code>bindAddress</code>:
+        </p>
+        <pre><code>{`sshTunnels:
+  db:
+    localPort: 15432
+    remoteHost: \${DB_HOST}
+    remotePort: 5432
+    host: \${BASTION_HOST}
+    bindAddress: 0.0.0.0   # EXPOSES the port to your LAN — containers only`}</code></pre>
+        <p>
+          A non-loopback <code>bindAddress</code> logs a warning at startup — the tunnelled
+          database becomes reachable by every machine on the local network (coffee-shop wifi
+          included). <code>bindAddress</code> is IPv4-only; the <code>::1</code> listener exists
+          only on the default loopback bind.
+        </p>
+        <p>
+          A <code>localPort</code> already held by another process is a <strong>hard error</strong>{" "}
+          (the tunnel fails, and with it the service — all-or-nothing). Foundry never assumes an
+          existing listener is its own tunnel: stop the other process or pick a different port.
+        </p>
+
+        <h2>SSH authentication — key file or agent</h2>
+        <p>
+          The <code>password</code> field (a path to an SSH private key file) is{" "}
+          <strong>optional</strong>. When omitted, authentication falls back to your{" "}
+          <strong>SSH agent</strong> (and keys in <code>~/.ssh</code>) — the right choice when
+          your key is passphrase-encrypted: encrypted key <em>files</em> are not supported
+          (there is no passphrase field), but an agent-loaded key works regardless.{" "}
+          <code>keySecret</code> can still fetch an unencrypted pem from AWS Secrets Manager
+          into the <code>password</code> path when the file is missing.
+        </p>
+
         <h2>Named environments — run several side by side</h2>
         <p>
           A service can declare per-environment dev overlays inside its existing{" "}

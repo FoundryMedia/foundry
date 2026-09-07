@@ -51,7 +51,7 @@ def load_ssh_pkey(key_file: str | Path):
 @dataclass(frozen=True)
 class SshTunnelConfig:
     """Configuration for an SSH tunnel.
-    
+
     Models: ssh -i <key> -N -L <local_port>:<remote_host>:<remote_port> <user>@<host>
     """
 
@@ -61,7 +61,12 @@ class SshTunnelConfig:
     host: str
     user: str = "ec2-user"
     password: str | None = None  # Path to private key (absolute or relative to manifest)
-    
+    # None = the safe default: 127.0.0.1 plus a [::1] relay so `-h localhost`
+    # works on dual-stack hosts. A non-loopback value (e.g. "0.0.0.0" so Docker
+    # containers can reach the tunnel via host.docker.internal) exposes the
+    # tunnelled service to the network — explicit opt-in only.
+    bind_address: str | None = None
+
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> "SshTunnelConfig":
         return cls(
@@ -71,17 +76,23 @@ class SshTunnelConfig:
             host=data["host"],
             user=data.get("user", "ec2-user"),
             password=data.get("password"),
+            bind_address=data.get("bindAddress"),
         )
-    
+
     @property
     def tunnel_spec(self) -> str:
         """Returns the -L argument value: local_port:remote_host:remote_port"""
         return f"{self.local_port}:{self.remote_host}:{self.remote_port}"
-    
+
     @property
     def destination(self) -> str:
         """Returns the SSH destination: user@host"""
         return f"{self.user}@{self.host}"
+
+    @property
+    def bind_display(self) -> str:
+        """The bind address as shown in logs."""
+        return self.bind_address or "127.0.0.1"
 
 
 def _is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
@@ -91,6 +102,79 @@ def _is_port_open(host: str, port: int, timeout: float = 0.25) -> bool:
             return True
     except OSError:
         return False
+
+
+def _is_loopback(address: str) -> bool:
+    return address in ("127.0.0.1", "localhost", "::1")
+
+
+class _LoopbackV6Relay:
+    """Tiny [::1]:port → 127.0.0.1:port relay.
+
+    sshtunnel's forward server is AF_INET-only, so a tunnel bound to
+    127.0.0.1 is invisible to clients that resolve ``localhost`` to ``::1``
+    first (macOS default) — psql/JDBC then fail with connection-refused while
+    ``ssh -L`` (which binds both loopbacks) works. This relay restores the
+    dual-stack behavior without touching sshtunnel internals. Best-effort:
+    hosts without IPv6 simply skip it.
+    """
+
+    def __init__(self, port: int) -> None:
+        self._port = port
+        self._server: asyncio.AbstractServer | None = None
+
+    async def start(self) -> str:
+        """Bind [::1]. Returns "ok", "in-use" (another process holds the
+        port — a squatter the tunnel must NOT silently coexist with), or
+        "unavailable" (no IPv6 on this host — skip, nothing to relay)."""
+        import errno
+
+        try:
+            self._server = await asyncio.start_server(
+                self._handle, host="::1", port=self._port
+            )
+            return "ok"
+        except OSError as e:
+            self._server = None
+            if e.errno == errno.EADDRINUSE:
+                return "in-use"
+            return "unavailable"
+
+    async def _handle(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+        try:
+            up_reader, up_writer = await asyncio.open_connection("127.0.0.1", self._port)
+        except OSError:
+            writer.close()
+            return
+
+        async def _pump(src: asyncio.StreamReader, dst: asyncio.StreamWriter) -> None:
+            try:
+                while True:
+                    chunk = await src.read(65536)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
+                    await dst.drain()
+            except (OSError, asyncio.CancelledError):
+                pass
+            finally:
+                try:
+                    dst.close()
+                except Exception:
+                    pass
+
+        await asyncio.gather(
+            _pump(reader, up_writer), _pump(up_reader, writer), return_exceptions=True
+        )
+
+    async def stop(self) -> None:
+        if self._server is not None:
+            self._server.close()
+            try:
+                await self._server.wait_closed()
+            except Exception:
+                pass
+            self._server = None
 
 
 class SshTunnelRunner:
@@ -114,6 +198,7 @@ class SshTunnelRunner:
         self._status_queue: asyncio.Queue[ServiceStatusEvent] = asyncio.Queue()
         self._tunnel = None  # SSHTunnelForwarder instance
         self._tunnel_name = tunnel_name
+        self._v6_relay: _LoopbackV6Relay | None = None
 
     @property
     def name(self) -> str:
@@ -168,18 +253,30 @@ class SshTunnelRunner:
         Returns True if the tunnel is established successfully.
         """
         cfg = self._config
-        
-        # Check if tunnel is already up (port already forwarded)
+
+        # FAIL FAST when the localPort is already held. The old behavior
+        # ("port already open — tunnel may already be active", report
+        # healthy) trusted ANY listener — a squatting process, a stale
+        # server, another foundry run — and the service then talked to the
+        # wrong thing. A held port is a config/lifecycle error the user must
+        # resolve; the all-or-nothing guarantee handles the rest.
         if _is_port_open("127.0.0.1", cfg.local_port, timeout=0.5):
-            await self._log(f"Port {cfg.local_port} already open - tunnel may already be active")
+            msg = (
+                f"localPort {cfg.local_port} is already in use by another "
+                "process (another foundry run, or something else listening). "
+                "Stop it or pick a different localPort — each tunnel and each "
+                "--env environment needs its own."
+            )
+            await self._log(msg, level="ERROR")
             await self._status_queue.put(
                 ServiceStatusEvent(
-                    self.name, ServiceStatus.healthy,
-                    detail=f"Port {cfg.local_port} already forwarded",
-                    level="INFO",
+                    self.name, ServiceStatus.failed,
+                    detail=f"localPort {cfg.local_port} already in use",
+                    error=msg,
+                    level="ERROR",
                 )
             )
-            return True
+            return False
 
         # Resolve key file
         key_file = self._resolve_password_path()
@@ -195,6 +292,33 @@ class SshTunnelRunner:
             )
             return False
 
+        # Loopback by default: publishing a tunnelled database to the whole
+        # LAN is a hole, not a feature. A manifest opts into wider exposure
+        # explicitly via bindAddress (e.g. "0.0.0.0" for Docker containers
+        # reaching the tunnel through host.docker.internal).
+        bind_addr = cfg.bind_address or "127.0.0.1"
+        if ":" in bind_addr:
+            await self._log(
+                f"bindAddress '{bind_addr}' is not supported (IPv4 only — the "
+                "default already listens on ::1 via a loopback relay)",
+                level="ERROR",
+            )
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.failed,
+                    detail="Unsupported bindAddress",
+                    error=f"bindAddress '{bind_addr}' must be an IPv4 address",
+                    level="ERROR",
+                )
+            )
+            return False
+        if not _is_loopback(bind_addr):
+            await self._log(
+                f"bindAddress {bind_addr}: port {cfg.local_port} is reachable "
+                "from other machines on the network",
+                level="WARN",
+            )
+
         await self._log(f"Connecting to {cfg.host}...")
         await self._status_queue.put(
             ServiceStatusEvent(
@@ -207,32 +331,60 @@ class SshTunnelRunner:
         try:
             # Import here to allow graceful error if sshtunnel not installed
             from sshtunnel import SSHTunnelForwarder
-            
+
             # Create tunnel in a thread pool to avoid blocking
             loop = asyncio.get_event_loop()
-            
+
             def create_tunnel():
-                # Bind to 0.0.0.0 so Docker containers can reach the tunnel
-                # via host.docker.internal (which resolves to a non-loopback IP
-                # on Docker Desktop). Binding to 127.0.0.1 would make the
-                # tunnel unreachable from containers.
                 pkey = load_ssh_pkey(key_file) if key_file else None
                 tunnel = SSHTunnelForwarder(
                     (cfg.host, 22),
                     ssh_username=cfg.user,
                     ssh_pkey=pkey if pkey is not None else (str(key_file) if key_file else None),
                     remote_bind_address=(cfg.remote_host, cfg.remote_port),
-                    local_bind_address=("0.0.0.0", cfg.local_port),
+                    local_bind_address=(bind_addr, cfg.local_port),
                     set_keepalive=30.0,
                 )
                 tunnel.start()
                 return tunnel
-            
+
             self._tunnel = await loop.run_in_executor(None, create_tunnel)
-            
+
             # Verify tunnel is active
             if self._tunnel.is_active:
                 actual_port = self._tunnel.local_bind_port
+                # Dual-stack: sshtunnel's forward server is IPv4-only, so on
+                # the default loopback bind also listen on [::1] (macOS
+                # resolves `localhost` to ::1 first). No IPv6 on the host =
+                # skip; the port HELD on ::1 by another process = fail —
+                # `localhost` clients would silently talk to the squatter.
+                if cfg.bind_address is None:
+                    self._v6_relay = _LoopbackV6Relay(cfg.local_port)
+                    relay_state = await self._v6_relay.start()
+                    if relay_state == "in-use":
+                        self._v6_relay = None
+                        msg = (
+                            f"localPort {cfg.local_port} is already in use on "
+                            "[::1] by another process — stop it or pick a "
+                            "different localPort."
+                        )
+                        await self._log(msg, level="ERROR")
+                        await self.stop()
+                        await self._status_queue.put(
+                            ServiceStatusEvent(
+                                self.name, ServiceStatus.failed,
+                                detail=f"localPort {cfg.local_port} already in use on [::1]",
+                                error=msg,
+                                level="ERROR",
+                            )
+                        )
+                        return False
+                    if relay_state != "ok":
+                        self._v6_relay = None
+                        await self._log(
+                            "IPv6 loopback (::1) unavailable — tunnel listens on 127.0.0.1 only",
+                            level="DEBUG",
+                        )
                 await self._log(f"Tunnel established (localhost:{actual_port} → {cfg.remote_host}:{cfg.remote_port})")
                 await self._status_queue.put(
                     ServiceStatusEvent(
@@ -277,6 +429,13 @@ class SshTunnelRunner:
                 error_msg = f"Connection to {cfg.host} timed out"
             elif "No such file" in error_msg:
                 error_msg = f"SSH key file not found"
+            elif "open tunnel" in error_msg.lower() or "in use" in error_msg.lower():
+                # Bind failed at sshtunnel level (e.g. the port was grabbed
+                # between our pre-check and the bind).
+                error_msg = (
+                    f"Could not bind localPort {cfg.local_port} — "
+                    "already in use by another process?"
+                )
             
             await self._log(f"SSH tunnel failed: {error_msg}", level="ERROR")
             await self._status_queue.put(
@@ -291,6 +450,9 @@ class SshTunnelRunner:
 
     async def stop(self) -> None:
         """Stop the SSH tunnel."""
+        if self._v6_relay is not None:
+            await self._v6_relay.stop()
+            self._v6_relay = None
         if self._tunnel:
             try:
                 loop = asyncio.get_event_loop()

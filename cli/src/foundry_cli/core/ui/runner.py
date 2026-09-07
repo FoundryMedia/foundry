@@ -551,6 +551,13 @@ class ServicesUI(App[None]):
 
         self._status: Dict[str, ServiceStatus] = {s.name: ServiceStatus.starting for s in services}
 
+        # Fatal-exit tracking: when EVERY top-level service is failed and
+        # none was ever healthy (pure startup failure — bad bastion host,
+        # missing deps), the TUI exits itself with return_code 1 so scripts
+        # and CI fail fast instead of hanging on a full-screen UI.
+        self._ever_healthy: set[str] = set()
+        self.fatal_failures: Dict[str, str] = {}
+
         # Build display names from runners (fallback to service name if no runner)
         self._display_names: Dict[str, str] = {}
         for svc in services:
@@ -838,6 +845,12 @@ class ServicesUI(App[None]):
         self._status[ev.service_name] = ev.status
         self._update_service_label(ev.service_name)
 
+        if ev.status == ServiceStatus.healthy:
+            self._ever_healthy.add(ev.service_name)
+        elif ev.status == ServiceStatus.failed:
+            self.fatal_failures[ev.service_name] = ev.error or ev.detail or "Failed"
+            self._maybe_exit_fatal()
+
         # Signal tunnel readiness for sidecar dependency tracking
         if ev.service_name in self._tunnel_ready and not self._tunnel_ready[ev.service_name].is_set():
             detail_lower = (ev.detail or "").lower()
@@ -860,6 +873,26 @@ class ServicesUI(App[None]):
                 self.query_one("#log", RichLog).write(styled)
             except NoMatches:
                 return
+
+    def _maybe_exit_fatal(self) -> None:
+        """Exit with code 1 when every top-level service failed at startup.
+
+        Restart ('r') can still recover a partially-failed session; this only
+        fires when the whole run is dead and nothing ever became healthy —
+        e.g. an unreachable bastion killing the sole service's tunnels.
+        """
+        top = [n for n in self._status if "/" not in n]
+        if not top:
+            return
+        if any(n in self._ever_healthy for n in top):
+            return
+        if not all(self._status.get(n) == ServiceStatus.failed for n in top):
+            return
+        # Keep only top-level failures for the post-exit summary.
+        self.fatal_failures = {
+            n: self.fatal_failures.get(n, "Failed") for n in top
+        }
+        self.exit(return_code=1)
 
     async def on_event(self, event: events.Event) -> None:
         """Drop right/middle-click mouse events and paste events before dispatch.

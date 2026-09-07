@@ -18,7 +18,12 @@ from foundry_cli.core.services.runners.base import (
 
 
 def _kill_process_tree(pid: int) -> None:
-    """Kill a process and all its children (handles mvnw -> java on Windows)."""
+    """Kill a process and all its children (handles mvnw -> java on Windows).
+
+    POSIX children are spawned with ``start_new_session=True`` (their own
+    process group), so ``killpg`` targets exactly that service's tree — never
+    foundry's own group.
+    """
     import subprocess
 
     if sys.platform == "win32":
@@ -28,9 +33,83 @@ def _kill_process_tree(pid: int) -> None:
             pass
     else:
         try:
-            os.killpg(os.getpgid(pid), signal.SIGTERM)
+            pgid = os.getpgid(pid)
+            if pgid == os.getpgid(0):
+                # Child unexpectedly shares our group — signal just the pid.
+                os.kill(pid, signal.SIGTERM)
+            else:
+                os.killpg(pgid, signal.SIGTERM)
         except (ProcessLookupError, PermissionError, OSError):
             pass
+
+
+# ── Live-child registry + emergency teardown ─────────────────────────
+#
+# Every spawned service process registers here so the whole set can be
+# reaped when the foundry process itself dies (SIGTERM/SIGHUP, atexit).
+# Without this, killing foundry left mvn/java children running against
+# closed tunnels. (SIGKILL of foundry remains unfixable — nothing runs.)
+
+_LIVE_PIDS: set[int] = set()
+
+
+def _register_live_pid(pid: int) -> None:
+    _LIVE_PIDS.add(pid)
+
+
+def _unregister_live_pid(pid: int) -> None:
+    _LIVE_PIDS.discard(pid)
+
+
+def kill_all_live_children(*, force_after: float = 1.5) -> None:
+    """Synchronously reap every registered child process tree.
+
+    Safe to call from a signal handler or atexit — no asyncio involved.
+    Idempotent: already-dead pids are skipped.
+    """
+    import subprocess
+    import time
+
+    pids = list(_LIVE_PIDS)
+    if not pids:
+        return
+
+    if sys.platform == "win32":
+        for pid in pids:
+            try:
+                subprocess.run(
+                    ["taskkill", "/F", "/T", "/PID", str(pid)],
+                    capture_output=True, timeout=10.0,
+                )
+            except Exception:
+                pass
+    else:
+        groups: list[int] = []
+        for pid in pids:
+            try:
+                pgid = os.getpgid(pid)
+            except (ProcessLookupError, OSError):
+                continue
+            if pgid == os.getpgid(0):
+                try:
+                    os.kill(pid, signal.SIGTERM)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                continue
+            groups.append(pgid)
+            try:
+                os.killpg(pgid, signal.SIGTERM)
+            except (ProcessLookupError, PermissionError, OSError):
+                pass
+        if groups:
+            time.sleep(force_after)
+            for pgid in groups:
+                try:
+                    os.killpg(pgid, signal.SIGKILL)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+
+    _LIVE_PIDS.clear()
 
 
 # 8 MiB – large enough for Java stack traces, Docker JSON blobs, etc.
@@ -123,6 +202,11 @@ class ProcessBackedRunner(ServiceRunner):
         spawn_kwargs: dict = {}
         if sys.platform == "win32":
             spawn_kwargs["creationflags"] = subprocess.CREATE_NO_WINDOW
+        else:
+            # Own process group/session: teardown can killpg the service's
+            # whole tree (mvnw -> mvn -> java) without touching foundry's own
+            # group, and the emergency sweep can reap it if foundry dies.
+            spawn_kwargs["start_new_session"] = True
 
         self._proc = await asyncio.create_subprocess_exec(
             *argv,
@@ -134,6 +218,7 @@ class ProcessBackedRunner(ServiceRunner):
             limit=_STREAM_READER_LIMIT,
             **spawn_kwargs,
         )
+        _register_live_pid(self._proc.pid)
 
         assert self._proc.stdout is not None
         assert self._proc.stderr is not None
@@ -191,6 +276,9 @@ class ProcessBackedRunner(ServiceRunner):
                         await asyncio.wait_for(proc.wait(), timeout=3.0)
                     except asyncio.TimeoutError:
                         pass
+
+        if pid is not None:
+            _unregister_live_pid(pid)
 
         # Close transport to avoid "Event loop is closed" errors on Windows
         try:

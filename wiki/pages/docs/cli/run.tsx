@@ -38,9 +38,23 @@ foundry run [-d|--debug] build [--filter NAMES]`}</code></pre>
           <tbody>
             <tr><td><code>--filter</code></td><td><CodeList items={["dev", "build"]} /></td><td>Comma-separated service names to run (dependencies are included automatically)</td></tr>
             <tr><td><code>--migrate-db, -mdb</code></td><td><code>dev</code></td><td>Run Liquibase migrations before starting services that have a <code>database</code> block</td></tr>
+            <tr><td><code>--no-tui</code></td><td><CodeList items={["dev", "build"]} /></td><td>Plain-text streaming output instead of the full-screen UI. Auto-selected when stdout is not a TTY or <code>FOUNDRY_NO_TUI=1</code> is set</td></tr>
             <tr><td><code>--debug, -d</code></td><td>group</td><td>Show debug output</td></tr>
           </tbody>
         </table>
+
+        <h2>Headless mode and exit codes</h2>
+        <p>
+          In a script, CI job, or pipe, <code>run dev</code> automatically drops the full-screen
+          UI and streams plain, untruncated log lines (<code>--no-tui</code> forces this in a
+          terminal too). When <strong>every</strong> service ends up failed — an unreachable
+          bastion killing the tunnels, a missing dependency — the process tears everything down
+          and <strong>exits with status 1</strong> instead of sitting in the UI, so a wrapping
+          script fails fast. The interactive UI applies the same rule when the whole run fails
+          at startup, printing the full error text after it closes. Ctrl+C (or SIGTERM) is a
+          graceful shutdown: the service process tree and its SSH tunnels are all torn down
+          together — no orphaned <code>mvn</code>/<code>java</code> children.
+        </p>
 
         <h2>The Services UI</h2>
         <p>

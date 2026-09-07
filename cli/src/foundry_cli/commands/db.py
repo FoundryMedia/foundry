@@ -131,7 +131,9 @@ def _open_tunnel(tunnel_cfg: dict[str, Any], workspace_root: Path):
         ssh_username=user,
         ssh_pkey=pkey if pkey is not None else key_path,
         remote_bind_address=(remote_host, remote_port),
-        local_bind_address=("0.0.0.0", local_port),
+        # Loopback only — liquibase runs natively on this host; binding wider
+        # would publish the tunnelled database to the local network.
+        local_bind_address=("127.0.0.1", local_port),
         set_keepalive=30.0,
     )
     tunnel.start()
@@ -175,10 +177,11 @@ def _resolve_credentials(
         port = creds.get("port", _DEFAULT_PORTS.get(db_config.engine, 5432))
         dbname = creds.get("dbname", "")
 
-        # Apply tunnel override
+        # Apply tunnel override. 127.0.0.1 (not "localhost") — the tunnel
+        # listener is IPv4-only and macOS resolves localhost to ::1 first.
         ssl_params = ""
         if tunnel_local_port:
-            host = "localhost"
+            host = "127.0.0.1"
             port = tunnel_local_port
             if db_config.engine in ("mariadb", "mysql"):
                 ssl_params = "?sslMode=trust"

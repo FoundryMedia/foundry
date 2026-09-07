@@ -101,11 +101,18 @@ def _generate_foundry_files(
     foundry_dir: Path,
     *,
     force: bool = False,
-) -> tuple[int, int, int]:
+    dry_run: bool = False,
+) -> tuple[int, int, int, dict]:
     """Generate ``.foundry/workspace.yml`` via sync.
 
+    Resolution (and the drift report) is ALWAYS computed fresh from the
+    manifest + filesystem — never echoed from a cached workspace.yml, which
+    goes stale the moment the manifest is edited. Only the WRITE is gated:
+    skipped when the file already exists without ``--force``, and always
+    skipped under ``--dry-run``.
+
     Returns:
-        ``(service_count, undeclared_count, missing_count)``
+        ``(service_count, undeclared_count, missing_count, ws_data)``
     """
     from foundry_cli.core.project.manifest import load_manifest_from_path
     from foundry_cli.core.project.workspace_config import (
@@ -116,26 +123,31 @@ def _generate_foundry_files(
 
     manifest = load_manifest_from_path(manifest_path)
 
-    # --- workspace.yml ---
+    # --- resolve fresh (manifest + filesystem are the truth) ---
+    ws_data = resolve_workspace(root, manifest)
+    svc_count = len(ws_data.get("services", {}))
+
+    # --- workspace.yml write (gated) ---
     existing_ws = load_workspace_yml(foundry_dir)
-    if existing_ws and not force:
-        svc_count = len(existing_ws.get("services", {}))
+    if dry_run:
         click.echo(click.style(
-            f"  • workspace.yml exists ({svc_count} services) — "
-            "use --force or run 'foundry sync' to regenerate",
+            "  [dry-run] Would write .foundry/workspace.yml "
+            f"({svc_count} services resolved)",
+            fg="cyan",
+        ))
+    elif existing_ws and not force:
+        click.echo(click.style(
+            f"  • workspace.yml exists — showing fresh resolution below; "
+            "use --force or 'foundry sync' to rewrite it",
             fg="yellow",
         ))
     else:
-        ws_data = resolve_workspace(root, manifest)
         save_workspace_yml(ws_data, foundry_dir)
-        svc_count = len(ws_data.get("services", {}))
         click.echo(click.style(
             f"  ✓ .foundry/workspace.yml  ({svc_count} services resolved)",
             fg="green",
         ))
 
-    # Read back drift from workspace
-    ws_data = load_workspace_yml(foundry_dir) or {}
     drift = ws_data.get("drift", {})
     undeclared = len(drift.get("undeclared", {}))
     missing = len(drift.get("missing", []))
@@ -152,14 +164,11 @@ def _generate_foundry_files(
             fg="yellow",
         ))
 
-    return svc_count, undeclared, missing
+    return svc_count, undeclared, missing, ws_data
 
 
-def _display_drift(foundry_dir: Path) -> None:
-    """Display drift information from ``workspace.yml``."""
-    from foundry_cli.core.project.workspace_config import load_workspace_yml
-
-    ws_data = load_workspace_yml(foundry_dir)
+def _display_drift(ws_data: dict) -> None:
+    """Display drift information from a freshly-resolved workspace dict."""
     if not ws_data:
         return
 
@@ -187,6 +196,12 @@ def _display_drift(foundry_dir: Path) -> None:
         click.echo(click.style("  Missing (in manifest, not on disk):", fg="red"))
         for name in missing:
             click.echo(f"    {click.style(name, fg='cyan')}")
+        click.echo(click.style(
+            "    → Set the service's \"path\" in foundry.json (\".\" when the "
+            "repository root IS the service), create the directory, or remove "
+            "the entry.",
+            fg="white",
+        ))
 
     click.echo()
     click.echo(click.style("  Run 'foundry sync' to reconcile.", fg="white"))
@@ -200,6 +215,7 @@ def _handle_existing(
     state: FoundryProjectState,
     *,
     force: bool = False,
+    dry_run: bool = False,
 ) -> None:
     """Show project summary and regenerate ``.foundry/`` config files."""
     from foundry_cli.core.project.manifest import load_manifest_from_path
@@ -232,21 +248,26 @@ def _handle_existing(
 
     click.echo()
 
-    # Ensure .foundry/ structure is complete
-    foundry_dir = ensure_foundry_dir(state.root)
-    modified = ensure_gitignore_entry(state.root)
+    # Ensure .foundry/ structure is complete — dry-run must not write
+    # ANYTHING (workspace.yml, .foundry/.gitignore, root .gitignore).
+    if dry_run:
+        foundry_dir = state.foundry_dir_path or (state.root / ".foundry")
+    else:
+        foundry_dir = ensure_foundry_dir(state.root)
+        ensure_gitignore_entry(state.root)
 
     # Generate runtime + state
     click.echo(click.style("Generating:", fg="yellow", bold=True))
-    _generate_foundry_files(
+    _, _, _, ws_data = _generate_foundry_files(
         state.root,
         state.manifest_path,
         foundry_dir,
         force=force,
+        dry_run=dry_run,
     )
 
-    # Show drift summary
-    _display_drift(foundry_dir)
+    # Show drift summary (from the fresh resolution, never the cached file)
+    _display_drift(ws_data)
 
 
 # ---------------------------------------------------------------------------
@@ -282,7 +303,7 @@ def _handle_upgrade(
         click.echo(click.style("  ✓ .gitignore updated", fg="green"))
 
     # Generate runtime + state
-    _generate_foundry_files(
+    _, _, _, ws_data = _generate_foundry_files(
         state.root,
         state.manifest_path,
         foundry_dir,
@@ -291,7 +312,7 @@ def _handle_upgrade(
 
     click.echo()
     click.echo(click.style("Foundry project configured.", fg="green", bold=True))
-    _display_drift(foundry_dir)
+    _display_drift(ws_data)
 
 
 # ---------------------------------------------------------------------------
@@ -533,7 +554,7 @@ def _run_init(
 
     # Already fully initialized — show project status + regenerate
     if state.is_initialized:
-        _handle_existing(state, force=force)
+        _handle_existing(state, force=force, dry_run=dry_run)
         return
 
     # Orphaned .foundry/ without a manifest (neither .foundry/foundry.json

@@ -745,7 +745,7 @@
           ]
         },
         "script": {
-          "description": "Explicit start command for local development, overriding the framework's default runner.",
+          "description": "Explicit start command for local development, overriding the framework's default runner. Spring Boot services run this VERBATIM (nothing injected or dropped; run.args are appended; 'debug'/'strictHealthPorts' injection is skipped with a warning). Node services treat it as the package.json script name to invoke.",
           "type": "string"
         },
         "debug": {
@@ -808,7 +808,11 @@
           "default": "ec2-user"
         },
         "password": {
-          "description": "Path to the SSH private key file (relative paths resolve against the service's repo root). Auto-fetched from 'keySecret' when missing. Keep it git-ignored — the CLI ensures an ignore entry when it writes the key.",
+          "description": "Path to the SSH private key file (relative paths resolve against the service's repo root). OPTIONAL: when omitted, authentication falls back to the SSH agent — the right choice for passphrase-encrypted keys, which are not supported as a file path (there is no passphrase field). Auto-fetched from 'keySecret' when missing. Keep it git-ignored — the CLI ensures an ignore entry when it writes the key.",
+          "type": "string"
+        },
+        "bindAddress": {
+          "description": "Local address the tunnel listens on. Default (omitted): loopback only — 127.0.0.1 plus a ::1 relay, so nothing on the network can reach the tunnelled service. Set \"0.0.0.0\" ONLY when something off-host must connect (e.g. a Docker container via host.docker.internal) — this exposes the tunnel to the local network and logs a warning. IPv4 only.",
           "type": "string"
         },
         "bastionTag": {

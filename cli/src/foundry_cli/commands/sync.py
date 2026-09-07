@@ -149,7 +149,9 @@ def _display_drift(drift: dict) -> None:
         for name in missing:
             click.echo(f"    {click.style(name, fg='cyan')}")
         click.echo(click.style(
-            "    → Create the directories or remove from foundry.json.",
+            "    → Set the service's \"path\" in foundry.json (\".\" when the "
+            "repository root IS the service), create the directory, or remove "
+            "the entry.",
             fg="bright_black",
         ))
 

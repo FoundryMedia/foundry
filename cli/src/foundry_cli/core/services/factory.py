@@ -75,6 +75,7 @@ def create_runner(
             actuator_port=cfg.actuator_port or 9000,
             dependency_manager="maven",
             command=command,
+            script=cfg.script,
             args=cfg.args,
             env=cfg.env,
             strict_health_ports=strict_health_ports,

@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import socket
+import sys
 from pathlib import Path
 from typing import Literal
 
@@ -52,6 +54,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         strict_health_ports: bool = False,
         dependency_manager: DependencyManager = "maven",
         command: str = "dev",
+        script: str | None = None,
         args: tuple[str, ...] = (),
         env: dict[str, str] | None = None,
         debug_config: DebugConfig | None = None,
@@ -61,12 +64,17 @@ class SpringBootServiceRunner(ProcessBackedRunner):
         self._actuator_port = actuator_port
         self._strict_health_ports = strict_health_ports
         self._dep = dependency_manager
+        self._script = (script or "").strip() or None
         self._args = args
         self._env = env or {}
         self._debug_config = debug_config
         self._process_monitor_task: asyncio.Task | None = None
 
     async def start(self) -> None:
+        if self._script:
+            await self._start_with_script()
+            return
+
         if self._dep != "maven":
             await self._status_queue.put(
                 ServiceStatusEvent(
@@ -149,6 +157,62 @@ class SpringBootServiceRunner(ProcessBackedRunner):
             if app_args:
                 cmd.append(f"-Dspring-boot.run.arguments={' '.join(app_args)}")
 
+        await self._launch(cmd)
+
+    async def _start_with_script(self) -> None:
+        """Launch a manifest-declared ``run.script`` VERBATIM.
+
+        The script is the user's exact command (e.g. ``mvn spring-boot:run
+        -s settings.xml``) — no flags are injected or dropped. ``run.args``
+        are appended as-is. Injection-based features that only apply to the
+        default mvnw command are skipped with a warning.
+        """
+        try:
+            cmd = shlex.split(self._script, posix=(sys.platform != "win32"))
+        except ValueError as e:
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.failed,
+                    detail="Invalid run.script",
+                    error=f"Could not parse run.script: {e}",
+                    level="ERROR",
+                )
+            )
+            return
+        if not cmd:
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.failed,
+                    detail="Empty run.script",
+                    error="run.script is empty.",
+                    level="ERROR",
+                )
+            )
+            return
+        cmd.extend(self._args)
+
+        skipped = []
+        if self._debug_config is not None:
+            skipped.append("debug (JDWP injection)")
+        if self._strict_health_ports:
+            skipped.append("strictHealthPorts (--server.port injection)")
+        if skipped:
+            await self._status_queue.put(
+                ServiceStatusEvent(
+                    self.name, ServiceStatus.starting,
+                    detail=(
+                        "run.script runs verbatim — skipping "
+                        + ", ".join(skipped)
+                        + "; add the flags to the script itself."
+                    ),
+                    level="WARN",
+                )
+            )
+
+        await self._launch(cmd)
+
+    async def _launch(self, cmd: list[str]) -> None:
+        """Spawn the command, monitor the process, and wait for readiness."""
         run_env = {**os.environ, **self._env}
         # Spring disables ANSI on a piped (non-TTY) stdout; the TUI log pane
         # decodes ANSI, so force color back on. Explicit manifest env wins.

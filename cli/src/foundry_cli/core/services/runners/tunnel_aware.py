@@ -49,6 +49,7 @@ class TunnelAwareRunner(ServiceRunner):
                 host=tc.host,
                 user=tc.user,
                 password=tc.password,
+                bind_address=tc.bind_address,
             )
             for name, tc in tunnel_configs.items()
         }
@@ -98,7 +99,7 @@ class TunnelAwareRunner(ServiceRunner):
         for tunnel_name, cfg in self._tunnel_configs.items():
             await self._log(
                 f"{self._tunnel_label(tunnel_name)} Configuring SSH tunnel: "
-                f"0.0.0.0:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} "
+                f"{cfg.bind_display}:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} "
                 f"via {cfg.user}@{cfg.host}",
                 "INFO",
             )

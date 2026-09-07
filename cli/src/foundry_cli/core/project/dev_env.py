@@ -231,6 +231,7 @@ _TUNNEL_FIELD_MAP = {
     "host": "host",
     "user": "user",
     "password": "password",
+    "bindAddress": "bind_address",
     "bastionTag": "bastion_tag",
     "keySecret": "key_secret",
     "credentialsSecret": "credentials_secret",

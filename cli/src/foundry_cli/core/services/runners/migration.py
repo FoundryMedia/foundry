@@ -336,7 +336,9 @@ class MigrationAwareRunner(ServiceRunner):
                     # tunnel, so leave its default SSL negotiation intact.
                     ssl_params = ""
                     if self._tunnel_local_port:
-                        host = "localhost"
+                        # 127.0.0.1, not "localhost" — the tunnel listener is
+                        # IPv4-only and macOS resolves localhost to ::1 first.
+                        host = "127.0.0.1"
                         port = self._tunnel_local_port
                         if cfg.engine in ("mariadb", "mysql"):
                             ssl_params = "?sslMode=trust"

@@ -19,6 +19,11 @@ class SshTunnelConfig:
     host: str
     user: str = "ec2-user"
     password: str | None = None  # Path to SSH private key file
+    # Local bind address. None = loopback (127.0.0.1 + a ::1 relay). Set
+    # "0.0.0.0" ONLY when something off-host (e.g. a Docker container via
+    # host.docker.internal) must reach the tunnel — it exposes the tunnelled
+    # service to the local network.
+    bind_address: str | None = None
 
     # ── Optional AWS autowire (all composable — absent = fully manual) ──
     # bastion_tag: resolve `host` by EC2 tag:Name when the host var is unset.
@@ -56,6 +61,7 @@ class SshTunnelConfig:
             host=_expand(data["host"]),
             user=_expand(data.get("user", "ec2-user")),
             password=_expand(data.get("password")),
+            bind_address=_expand(data.get("bindAddress")),
             bastion_tag=data.get("bastionTag"),
             key_secret=data.get("keySecret"),
             credentials_secret=data.get("credentialsSecret"),

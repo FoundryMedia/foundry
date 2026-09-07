@@ -187,9 +187,11 @@ def resolve_workspace(
         # A manifest-declared path (the multi-repo v0.7.0 shape:
         # ``services.<name>.path``) wins over the conventional apps/ scan —
         # without this, multi-repo repos report every service as "missing".
+        # A declared-but-empty path means "the repository root IS the
+        # service" — same as ".".
         svc_dir = None
-        if svc_cfg.path:
-            declared = project_root / svc_cfg.path
+        if svc_cfg.path is not None:
+            declared = project_root / (svc_cfg.path or ".")
             if declared.is_dir():
                 svc_dir = declared
 

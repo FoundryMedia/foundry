@@ -50,12 +50,54 @@ def run(ctx: click.Context, debug: bool) -> None:
 run.help_tip = "VSCode users, in Settings set terminal.integrated.stickyScroll.enabled to false"
 
 
+_EMERGENCY_HANDLERS_INSTALLED = False
+
+
+def _install_emergency_teardown() -> None:
+    """Reap child service processes when foundry itself dies.
+
+    SIGTERM/SIGHUP and normal interpreter exit sweep every registered child
+    process tree (mvn -> java survive nothing here). SIGKILL of foundry is
+    the one unfixable case — nothing runs then.
+    """
+    global _EMERGENCY_HANDLERS_INSTALLED
+    if _EMERGENCY_HANDLERS_INSTALLED:
+        return
+    _EMERGENCY_HANDLERS_INSTALLED = True
+
+    import atexit
+    import os
+    import signal
+
+    from foundry_cli.core.services.runners.process import kill_all_live_children
+
+    atexit.register(kill_all_live_children)
+
+    def _emergency(signum, frame):  # noqa: ANN001
+        kill_all_live_children()
+        try:
+            signal.signal(signum, signal.SIG_DFL)
+        except (ValueError, OSError):
+            pass
+        os.kill(os.getpid(), signum)
+
+    handled = [signal.SIGTERM]
+    if hasattr(signal, "SIGHUP"):
+        handled.append(signal.SIGHUP)
+    for sig in handled:
+        try:
+            signal.signal(sig, _emergency)
+        except (ValueError, OSError):
+            pass
+
+
 def _run_services_ui(
     command: str,
     *,
     filter_svc: str | None = None,
     migrate_db: bool = False,
     profile: str | None = None,
+    no_tui: bool = False,
 ) -> None:
     """Common logic for running services with the UI."""
     import click
@@ -196,11 +238,24 @@ def _run_services_ui(
             workspace_root=_root_for(svc),
         )
 
-    app = ServicesUI(all_services, runners, debug=debug)
-    
+    _install_emergency_teardown()
+
     # Suppress the asyncio cleanup warnings that happen on Windows
     suppress_async_cleanup_warnings()
-    
+
+    from foundry_cli.core.ui.headless import (
+        HeadlessServicesRunner,
+        headless_mode_requested,
+    )
+
+    if headless_mode_requested(no_tui):
+        exit_code = HeadlessServicesRunner(all_services, runners, debug=debug).run()
+        if exit_code:
+            raise SystemExit(exit_code)
+        return
+
+    app = ServicesUI(all_services, runners, debug=debug)
+
     try:
         app.run()
     except KeyboardInterrupt:
@@ -213,6 +268,15 @@ def _run_services_ui(
         print(click.style(f"Details written to: {log_path}", fg="yellow"))
         return
 
+    # Fatal startup failure (every service failed, none ever healthy): the
+    # TUI exits itself with return_code 1 — print the full errors plainly
+    # (no panel truncation) and propagate a nonzero status for scripts/CI.
+    if getattr(app, "return_code", 0):
+        print(click.style("\nRun failed — every service failed to start:", fg="red", bold=True))
+        for svc_name, error in getattr(app, "fatal_failures", {}).items():
+            print(click.style(f"  {svc_name}: ", fg="red", bold=True) + error)
+        raise SystemExit(app.return_code or 1)
+
     print(click.style("Shutdown gracefully. Goodbye!", fg="green", bold=True))
 
 
@@ -221,22 +285,24 @@ def _run_services_ui(
 @click.option("--migrate-db", "-mdb", is_flag=True, default=False, help="Run Liquibase database migrations before starting services that have a database block.")
 @click.option("--profile", "profile", default=None, help="Named workspace profile from foundry.workspace.json (shorthand: `foundry run dev:<profile>`).")
 @click.option("--env", "dev_environment", default=None, help="Named environment overlay: applies each service's environments.<name> run/env/sshTunnels blocks and layers .foundry/dev.<name>[.local].env. Equivalent to FOUNDRY_DEV_ENV (the flag wins). Distinct ports per env let two environments run side by side.")
+@click.option("--no-tui", "no_tui", is_flag=True, default=False, help="Plain-text streaming output instead of the full-screen UI (auto-selected when stdout is not a TTY or FOUNDRY_NO_TUI is set). Exits nonzero when every service fails.")
 @click.pass_context
-def dev(ctx: click.Context, filter_svc: str | None, migrate_db: bool, profile: str | None, dev_environment: str | None) -> None:
+def dev(ctx: click.Context, filter_svc: str | None, migrate_db: bool, profile: str | None, dev_environment: str | None, no_tui: bool) -> None:
     """Run the platform in development mode with the Services UI."""
     if dev_environment:
         import os
 
         os.environ["FOUNDRY_DEV_ENV"] = dev_environment.strip()
-    _run_services_ui("dev", filter_svc=filter_svc, migrate_db=migrate_db, profile=profile)
+    _run_services_ui("dev", filter_svc=filter_svc, migrate_db=migrate_db, profile=profile, no_tui=no_tui)
 
 
 @run.command(add_help_option=False)
 @click.option("--filter", "filter_svc", default=None, help="Comma-separated list of services to run (dependencies are included automatically).")
 @click.option("--profile", "profile", default=None, help="Named workspace profile from foundry.workspace.json (shorthand: `foundry run build:<profile>`).")
+@click.option("--no-tui", "no_tui", is_flag=True, default=False, help="Plain-text streaming output instead of the full-screen UI (auto-selected when stdout is not a TTY or FOUNDRY_NO_TUI is set).")
 @click.pass_context
-def build(ctx: click.Context, filter_svc: str | None, profile: str | None) -> None:
+def build(ctx: click.Context, filter_svc: str | None, profile: str | None, no_tui: bool) -> None:
     """Run the build command for all services."""
-    _run_services_ui("build", filter_svc=filter_svc, profile=profile)
+    _run_services_ui("build", filter_svc=filter_svc, profile=profile, no_tui=no_tui)
     
     
