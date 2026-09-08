@@ -41,6 +41,81 @@ from foundry_cli.release.versioning import get_local_version
 from foundry_cli.release.update_check import check_for_updates
 
 
+# -- Terminal profile ------------------------------------------------------
+#
+# Two things vary by terminal and both bit real users:
+#  * GLYPHS: check/cross/arrow/bullet characters render as boxes or mojibake
+#    in plain PowerShell / conhost and some macOS fonts. Only the VS Code
+#    integrated terminal is trusted to draw them; everywhere else the TUI
+#    uses ASCII (green "OK", red "ERR", "Up/Down", "->").
+#  * MOUSE MOTION: Textual enables any-event mouse tracking (mode 1003), which
+#    reports EVERY pointer move. macOS Terminal.app is where that stream shows
+#    up as escape-code spam over the live UI (the same picture as the b251ace
+#    console-echo bug, from a different cause). On Apple_Terminal the driver
+#    enables click reporting only - no motion stream.
+# Overrides: FOUNDRY_TUI_GLYPHS=1|0, FOUNDRY_TUI_MOUSE=1|0|clicks.
+
+
+def _truthy(value: str | None) -> bool | None:
+    if value is None:
+        return None
+    v = value.strip().lower()
+    if v in ("1", "on", "true", "yes"):
+        return True
+    if v in ("0", "off", "false", "no"):
+        return False
+    return None
+
+
+def _use_glyphs(env=None) -> bool:
+    env = os.environ if env is None else env
+    forced = _truthy(env.get("FOUNDRY_TUI_GLYPHS"))
+    if forced is not None:
+        return forced
+    return env.get("TERM_PROGRAM") == "vscode"
+
+
+def _mouse_mode(env=None) -> str:
+    """'full' (Textual default), 'clicks' (no motion stream), or 'off'."""
+    env = os.environ if env is None else env
+    raw = (env.get("FOUNDRY_TUI_MOUSE") or "").strip().lower()
+    if raw in ("clicks", "click"):
+        return "clicks"
+    forced = _truthy(raw or None)
+    if forced is True:
+        return "full"
+    if forced is False:
+        return "off"
+    return "clicks" if env.get("TERM_PROGRAM") == "Apple_Terminal" else "full"
+
+
+def _select_driver_class(env=None):
+    """A Textual driver class for this terminal, or None for the default.
+
+    POSIX only - Windows uses Textual's WindowsDriver (console input, no
+    escape-code mouse stream to tame).
+    """
+    mode = _mouse_mode(env)
+    if sys.platform == "win32" or mode == "full":
+        return None
+    from textual.drivers.linux_driver import LinuxDriver
+
+    class _TamedMouseLinuxDriver(LinuxDriver):
+        def _enable_mouse_support(self) -> None:
+            if mode == "off":
+                return
+            # Clicks only: SGR-encoded press/release, no any-event motion.
+            write = self.write
+            write("\x1b[?1000h")  # SET_VT200_MOUSE (press/release)
+            write("\x1b[?1006h")  # SET_SGR_EXT_MODE_MOUSE
+            self.flush()
+
+        def _enable_mouse_pixels(self) -> None:
+            return
+
+    return _TamedMouseLinuxDriver
+
+
 def _sanitize_id(name: str) -> str:
     """Sanitize a name to be a valid Textual widget ID.
     
@@ -146,7 +221,7 @@ def _print_update_banner_to_log(log_list, local: str, latest: str, url: str | No
     log_list.append(Text.from_markup("[#3B8EEA bold]-----------------------------------------------------------------------[/]"))
     line = (
         Text.from_markup("[#D670D6 bold]Update available: [/]" +
-            f"[#F14C4C bold]{local}[/][#F5F536 bold] → [/][#23D18B bold]{latest}[/]")
+            f"[#F14C4C bold]{local}[/][#F5F536 bold] -> [/][#23D18B bold]{latest}[/]")
     )
     log_list.append(line)
     if url:
@@ -537,11 +612,12 @@ class ServicesUI(App[None]):
         *,
         debug: bool = False,
     ) -> None:
-        super().__init__()
+        super().__init__(driver_class=_select_driver_class())
         # Pin the exact 0.56-era palette (see FOUNDRY_THEME) — the Textual 8.x
         # default themes would silently recolor the whole UI.
         self.register_theme(FOUNDRY_THEME)
         self.theme = "foundry"
+        self._glyphs = _use_glyphs()
         self._services = services
         self._provided_runners = runners
         self._debug = debug
@@ -601,7 +677,7 @@ class ServicesUI(App[None]):
         with Horizontal():
             with Vertical(id="sidebar"):
                 yield SidebarLabel("Services", id="sidebar_title")
-                yield SidebarLabel("↑/↓ Select • → to Interact", id="sidebar_hint")
+                yield SidebarLabel(self._hint_select(), id="sidebar_hint")
                 items = []
                 for svc in self._services:
                     safe_id = f"svc-{_sanitize_id(svc.name)}"
@@ -616,6 +692,12 @@ class ServicesUI(App[None]):
             yield SelectableRichLog(id="log", highlight=False, markup=False, wrap=True)
         yield ServicesFooter()
 
+
+    def _hint_select(self) -> str:
+        return "↑/↓ Select • → to Interact" if self._glyphs else "Up/Down Select - Right to Interact"
+
+    def _hint_back(self) -> str:
+        return "← to Change Service" if self._glyphs else "Left to Change Service"
 
     def _update_service_label(self, service_name: str) -> None:
         safe_id = f"svc-{_sanitize_id(service_name)}"
@@ -634,11 +716,14 @@ class ServicesUI(App[None]):
             # Plain U+2713/U+2717 — the U+FE0E variation-selector forms
             # (✔︎/✘︎) render wider than they measure in some terminals
             # (VS Code) and clip in the 5-cell icon column.
-            icon_lbl.update(" ✓" if self._is_vscode else "[OK]")
+            # Outside VS Code glyphs are not trusted at all: a plain green OK.
+            icon_lbl.update(" ✓" if self._glyphs else " OK")
             icon_lbl.styles.color = "#23D18B"
+            icon_lbl.styles.text_style = "bold"
         elif st == ServiceStatus.failed:
-            icon_lbl.update(" ✗" if self._is_vscode else "[X]")
+            icon_lbl.update(" ✗" if self._glyphs else "ERR")
             icon_lbl.styles.color = "#F14C4C"
+            icon_lbl.styles.text_style = "bold"
         else:
             icon_lbl.update("?")
             icon_lbl.styles.color = "#888888"
@@ -998,7 +1083,7 @@ class ServicesUI(App[None]):
         self.query_one("#log", RichLog).focus()
 
         try:
-            self.query_one("#sidebar_hint", Label).update("← to Change Service")
+            self.query_one("#sidebar_hint", Label).update(self._hint_back())
         except NoMatches:
             pass
 
@@ -1009,7 +1094,7 @@ class ServicesUI(App[None]):
         self.query_one("#services", ListView).focus()
 
         try:
-            self.query_one("#sidebar_hint", Label).update("↑/↓ Select • → to Interact")
+            self.query_one("#sidebar_hint", Label).update(self._hint_select())
         except NoMatches:
             pass
 
@@ -1097,7 +1182,7 @@ class ServicesUI(App[None]):
             pass
         if not selection:
             self._notify_selected(
-                "INFO", "Nothing selected — click+drag in the log, then Ctrl+C"
+                "INFO", "Nothing selected - click+drag in the log, then Ctrl+C"
             )
             return
         err = _copy_text_to_clipboard(selection)

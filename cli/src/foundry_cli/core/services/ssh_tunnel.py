@@ -297,7 +297,7 @@ class SshTunnelRunner:
 
     @property
     def display_name(self) -> str:
-        return f"SSH Tunnel ({self._config.local_port} → {self._config.remote_host}:{self._config.remote_port})"
+        return f"SSH Tunnel ({self._config.local_port} -> {self._config.remote_host}:{self._config.remote_port})"
 
     def _resolve_password_path(self) -> Path | None:
         """Resolve the password (private key) file path.
@@ -352,7 +352,7 @@ class SshTunnelRunner:
             msg = (
                 f"localPort {cfg.local_port} is already in use by another "
                 "process (another foundry run, or something else listening). "
-                "Stop it or pick a different localPort — each tunnel and each "
+                "Stop it or pick a different localPort - each tunnel and each "
                 "--env environment needs its own."
             )
             await self._log(msg, level="ERROR")
@@ -387,7 +387,7 @@ class SshTunnelRunner:
         bind_addr = cfg.bind_address or "127.0.0.1"
         if ":" in bind_addr:
             await self._log(
-                f"bindAddress '{bind_addr}' is not supported (IPv4 only — the "
+                f"bindAddress '{bind_addr}' is not supported (IPv4 only - the "
                 "default already listens on ::1 via a loopback relay)",
                 level="ERROR",
             )
@@ -456,7 +456,7 @@ class SshTunnelRunner:
                         self._v6_relay = None
                         msg = (
                             f"localPort {cfg.local_port} is already in use on "
-                            "[::1] by another process — stop it or pick a "
+                            "[::1] by another process - stop it or pick a "
                             "different localPort."
                         )
                         await self._log(msg, level="ERROR")
@@ -473,10 +473,10 @@ class SshTunnelRunner:
                     if relay_state != "ok":
                         self._v6_relay = None
                         await self._log(
-                            "IPv6 loopback (::1) unavailable — tunnel listens on 127.0.0.1 only",
+                            "IPv6 loopback (::1) unavailable - tunnel listens on 127.0.0.1 only",
                             level="DEBUG",
                         )
-                await self._log(f"Tunnel established (localhost:{actual_port} → {cfg.remote_host}:{cfg.remote_port})")
+                await self._log(f"Tunnel established (localhost:{actual_port} -> {cfg.remote_host}:{cfg.remote_port})")
                 await self._status_queue.put(
                     ServiceStatusEvent(
                         self.name, ServiceStatus.healthy,
@@ -524,7 +524,7 @@ class SshTunnelRunner:
                 # Bind failed at sshtunnel level (e.g. the port was grabbed
                 # between our pre-check and the bind).
                 error_msg = (
-                    f"Could not bind localPort {cfg.local_port} — "
+                    f"Could not bind localPort {cfg.local_port} - "
                     "already in use by another process?"
                 )
             

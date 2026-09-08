@@ -118,7 +118,7 @@ class MigrationAwareRunner(ServiceRunner):
         if not success:
             await self._emit_status(
                 ServiceStatus.failed,
-                detail="Database migration failed — service not started",
+                detail="Database migration failed - service not started",
                 error="Liquibase update returned a non-zero exit code. Check logs above.",
             )
             return
@@ -183,7 +183,7 @@ class MigrationAwareRunner(ServiceRunner):
         engine = cfg.engine
 
         if not changelog:
-            await self._log("[migration] No changelog path configured — skipping", "WARN")
+            await self._log("[migration] No changelog path configured - skipping", "WARN")
             return True
 
         # Resolve absolute paths from workspace root
@@ -211,7 +211,7 @@ class MigrationAwareRunner(ServiceRunner):
                 await self._log(f"[migration] Properties: {properties}", "DEBUG")
             else:
                 await self._log(
-                    f"[migration] Properties file not found: {properties_abs} — using CLI args only",
+                    f"[migration] Properties file not found: {properties_abs} - using CLI args only",
                     "WARN",
                 )
 
@@ -376,7 +376,7 @@ class MigrationAwareRunner(ServiceRunner):
         # 2. No secret configured — rely on env vars in liquibase.properties
         # The properties file uses ${DB_HOST}, ${DB_USERNAME}, ${DB_PASSWORD}
         await self._log(
-            "[migration] No credentials secret configured — "
+            "[migration] No credentials secret configured - "
             "using liquibase.properties defaults / env vars",
             "DEBUG",
         )

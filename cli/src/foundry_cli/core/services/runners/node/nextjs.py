@@ -211,7 +211,7 @@ class NodeServiceRunner(ProcessBackedRunner):
                 ServiceStatusEvent(
                     self.name, ServiceStatus.starting,
                     detail=(
-                        f"'{self._script.split()[0]}' is not a package.json script — "
+                        f"'{self._script.split()[0]}' is not a package.json script - "
                         "running run.script verbatim"
                     ),
                     level="DEBUG",

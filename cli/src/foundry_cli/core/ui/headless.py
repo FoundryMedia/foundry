@@ -187,7 +187,7 @@ class HeadlessServicesRunner:
             tasks.append(asyncio.create_task(self._pump_logs(runner)))
             tasks.append(asyncio.create_task(self._pump_status(runner)))
 
-        self._emit("foundry", f"running {len(started)} service(s) headless — Ctrl+C to stop")
+        self._emit("foundry", f"running {len(started)} service(s) headless - Ctrl+C to stop")
 
         try:
             await self._stop_event.wait()
@@ -195,7 +195,7 @@ class HeadlessServicesRunner:
             pass
         finally:
             reason = "all services failed" if self._fatal else "shutting down"
-            self._emit("foundry", f"{reason} — stopping services and tunnels")
+            self._emit("foundry", f"{reason} - stopping services and tunnels")
             for t in tasks:
                 t.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
@@ -204,12 +204,19 @@ class HeadlessServicesRunner:
             )
 
         if self._fatal:
-            self._emit("foundry", "exit 1 — every service failed to run", "ERROR")
+            self._emit("foundry", "exit 1 - every service failed to run", "ERROR")
             return 1
         self._emit("foundry", "shutdown complete")
         return 0
 
     def run(self) -> int:
+        # A piped stdout on Windows is cp1252: one unencodable character in a
+        # service's output would raise UnicodeEncodeError and kill the run.
+        for stream in (sys.stdout, sys.stderr):
+            try:
+                stream.reconfigure(errors="replace")  # type: ignore[attr-defined]
+            except Exception:
+                pass
         try:
             return asyncio.run(self._main())
         except KeyboardInterrupt:

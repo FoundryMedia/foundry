@@ -99,13 +99,13 @@ class TunnelAwareRunner(ServiceRunner):
         for tunnel_name, cfg in self._tunnel_configs.items():
             await self._log(
                 f"{self._tunnel_label(tunnel_name)} Configuring SSH tunnel: "
-                f"{cfg.bind_display}:{cfg.local_port} → {cfg.remote_host}:{cfg.remote_port} "
+                f"{cfg.bind_display}:{cfg.local_port} -> {cfg.remote_host}:{cfg.remote_port} "
                 f"via {cfg.user}@{cfg.host}",
                 "INFO",
             )
         if self._injected_env_keys:
             await self._log(
-                "[tunnel] dev target = PROD — service env carries: "
+                "[tunnel] dev target = PROD - service env carries: "
                 + ", ".join(self._injected_env_keys)
                 + " (values never logged)",
                 "INFO",
@@ -163,7 +163,7 @@ class TunnelAwareRunner(ServiceRunner):
                     detail=f"SSH tunnel(s) failed: {', '.join(failed)}",
                     error=(
                         "Cannot start service without all tunnels. See the "
-                        f"[tunnel:{'|'.join(failed)}] error above — check the "
+                        f"[tunnel:{'|'.join(failed)}] error above - check the "
                         "bastion host, SSH auth (key file or ssh-agent), the "
                         "remote host/port, and the network."
                     ),

@@ -45,6 +45,17 @@ foundry run [-d|--debug] build [--filter NAMES]`}</code></pre>
           </tbody>
         </table>
 
+        <h2>Terminal profiles</h2>
+        <p>
+          The UI adapts to the terminal it is drawn in. In the <strong>VS Code integrated
+          terminal</strong> status uses glyphs (✓ ✗) and arrow hints. <strong>Everywhere else</strong>{" "}
+          (PowerShell, Windows Terminal, macOS Terminal.app, xterm) status is a plain green{" "}
+          <code>OK</code> / red <code>ERR</code> and hints are words — glyphs render as boxes in
+          too many fonts. On <strong>macOS Terminal.app</strong> mouse <em>motion</em> tracking is off
+          (clicks still work) because that terminal spills the motion stream as escape codes over the
+          UI. Overrides: <code>FOUNDRY_TUI_GLYPHS=1|0</code>, <code>FOUNDRY_TUI_MOUSE=1|0|clicks</code>.
+        </p>
+
         <h2>What runs, and how <code>run.script</code> is interpreted</h2>
         <p>
           Every service <strong>declared</strong> in the manifest runs (or fails visibly with the

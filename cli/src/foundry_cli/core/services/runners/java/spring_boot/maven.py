@@ -234,7 +234,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                 ServiceStatusEvent(
                     self.name, ServiceStatus.starting,
                     detail=(
-                        "run.script runs verbatim — skipping "
+                        "run.script runs verbatim - skipping "
                         + ", ".join(skipped)
                         + "; add the flags to the script itself."
                     ),
@@ -374,7 +374,7 @@ class SpringBootServiceRunner(ProcessBackedRunner):
                     else:
                         down = f" (down: {', '.join(snap.down_components)})" if snap.down_components else ""
                         await _mark_healthy(
-                            f"Running on :{port} — health {snap.status}{down}",
+                            f"Running on :{port} - health {snap.status}{down}",
                             level="WARN",
                         )
                     return
