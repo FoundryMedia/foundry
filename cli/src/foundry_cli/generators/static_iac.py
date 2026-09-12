@@ -611,11 +611,17 @@ def render_iam(spec: StaticSiteSpec) -> str:
 # denies:
 #   * attaching an AWS-managed admin policy anywhere (no escalation through a
 #     new <bucket>-* role);
+#   * editing/deleting the boundary policy or removing it from a role;
 #   * rewriting THIS role's own trust / policies / boundary / existence.
+# Every role this stack creates carries the `<bucket>-ci-runner-boundary`
+# permissions boundary (the runner may only grant policies to roles that do),
+# so a new role can never exceed the runner's own reach. The runner role itself
+# is the one role without it (it would strip its own scoped IAM).
 #
 # Changes to THIS file are applied LOCALLY with an admin principal, never via
-# CI: DenySelfModification refuses them from the runner, and a CI self-apply
-# could otherwise detach its own policy mid-run and strand the role.
+# CI: DenySelfModification / DenyBoundaryTamper refuse them from the runner,
+# and a CI self-apply could otherwise detach its own policy mid-run and strand
+# the role.
 
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
@@ -665,16 +671,107 @@ resource "aws_iam_role_policy_attachment" "tofu_runner_poweruser" {
   policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
 }
 
-data "aws_iam_policy_document" "tofu_runner_iam_scoped" {
+# ── Permissions boundary for every role this stack creates ───────────────────
+# A role's effective permissions are the intersection of its own policy and
+# this document. Ceiling = the runner's own non-IAM reach plus PassRole of
+# prefixed roles, so a permissive inline policy on a new <bucket>-* role can
+# never exceed what the runner holds. Every hand-added role in this stack MUST
+# set `permissions_boundary = aws_iam_policy.runner_boundary.arn` — the runner
+# is denied granting a policy to a role without it.
+data "aws_iam_policy_document" "runner_boundary" {
   statement {
-    sid     = "ScopedIamOnStackResources"
+    sid         = "CeilingEverythingExceptIam"
+    effect      = "Allow"
+    not_actions = ["iam:*", "organizations:*", "account:*"]
+    resources   = ["*"]
+  }
+
+  statement {
+    sid       = "CeilingPassPrefixedRoles"
+    effect    = "Allow"
+    actions   = ["iam:PassRole"]
+    resources = ["arn:aws:iam::*:role/${var.bucket_name}-*"]
+  }
+
+  statement {
+    sid    = "CeilingIamReadsAndServiceLinked"
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:ListRoles",
+      "iam:GetInstanceProfile",
+      "iam:ListInstanceProfilesForRole",
+      "iam:CreateServiceLinkedRole",
+    ]
+    resources = ["*"]
+  }
+}
+
+resource "aws_iam_policy" "runner_boundary" {
+  name        = "${var.bucket_name}-ci-runner-boundary"
+  description = "Permissions boundary every role created by the ${var.bucket_name} CI runner must carry. Ceiling = everything except IAM, plus PassRole of ${var.bucket_name}-* roles."
+  policy      = data.aws_iam_policy_document.runner_boundary.json
+}
+
+data "aws_iam_policy_document" "tofu_runner_iam_scoped" {
+  # Reads, tags, trust and lifecycle of the stack's own roles — none of these
+  # grant a role permissions. The runner's own ARN is listed explicitly so a
+  # roleName override outside the bucket prefix still refreshes.
+  statement {
+    sid    = "ScopedRoleReadsTrustAndLifecycle"
+    effect = "Allow"
+    actions = [
+      "iam:GetRole",
+      "iam:GetRolePolicy",
+      "iam:ListRolePolicies",
+      "iam:ListAttachedRolePolicies",
+      "iam:ListRoleTags",
+      "iam:ListInstanceProfilesForRole",
+      "iam:TagRole",
+      "iam:UntagRole",
+      "iam:UpdateAssumeRolePolicy",
+      "iam:UpdateRole",
+      "iam:UpdateRoleDescription",
+      "iam:DeleteRole",
+      "iam:PassRole",
+    ]
+    resources = [
+      "arn:aws:iam::*:role/${var.bucket_name}-*",
+      aws_iam_role.tofu_runner.arn,
+    ]
+  }
+
+  # Anything that GRANTS a role permissions is allowed only when the role
+  # carries the boundary (the condition key is the boundary on the request for
+  # CreateRole / PutRolePermissionsBoundary, and the role's current boundary
+  # for the rest — an unbounded <bucket>-* role cannot be given a policy).
+  statement {
+    sid    = "ScopedRoleGrantsRequireBoundary"
+    effect = "Allow"
+    actions = [
+      "iam:CreateRole",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:PutRolePermissionsBoundary",
+    ]
+    resources = ["arn:aws:iam::*:role/${var.bucket_name}-*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "iam:PermissionsBoundary"
+      values   = [aws_iam_policy.runner_boundary.arn]
+    }
+  }
+
+  statement {
+    sid     = "ScopedPoliciesAndInstanceProfiles"
     effect  = "Allow"
     actions = ["iam:*"]
     resources = [
-      "arn:aws:iam::*:role/${var.bucket_name}-*",
       "arn:aws:iam::*:policy/${var.bucket_name}-*",
       "arn:aws:iam::*:instance-profile/${var.bucket_name}-*",
-      aws_iam_role.tofu_runner.arn,
     ]
   }
 
@@ -686,7 +783,7 @@ data "aws_iam_policy_document" "tofu_runner_iam_scoped" {
   }
 
   # No escalation path: the runner may create <bucket>-* roles, but never hand
-  # one an AWS-managed admin policy.
+  # one an AWS-managed admin policy (the boundary caps such a role anyway).
   statement {
     sid       = "DenyAdminPolicyAttach"
     effect    = "Deny"
@@ -702,6 +799,27 @@ data "aws_iam_policy_document" "tofu_runner_iam_scoped" {
         "arn:aws:iam::aws:policy/IAMFullAccess",
       ]
     }
+  }
+
+  # The boundary is the ceiling; the runner must not be able to raise it or
+  # take it off a role. Boundary edits are a local admin apply.
+  statement {
+    sid    = "DenyBoundaryTamper"
+    effect = "Deny"
+    actions = [
+      "iam:CreatePolicyVersion",
+      "iam:DeletePolicy",
+      "iam:DeletePolicyVersion",
+      "iam:SetDefaultPolicyVersion",
+    ]
+    resources = [aws_iam_policy.runner_boundary.arn]
+  }
+
+  statement {
+    sid       = "DenyBoundaryRemoval"
+    effect    = "Deny"
+    actions   = ["iam:DeleteRolePermissionsBoundary"]
+    resources = ["arn:aws:iam::*:role/${var.bucket_name}-*"]
   }
 
   # The runner never rewrites itself — changes to this role are a local admin
@@ -752,6 +870,11 @@ output "distribution_domain" {
 output "tofu_runner_role_arn" {
   description = "OIDC role ARN — the deploy.iac.roleArn for this service."
   value       = aws_iam_role.tofu_runner.arn
+}
+
+output "runner_boundary_arn" {
+  description = "Permissions boundary every hand-added role in this stack must carry."
+  value       = aws_iam_policy.runner_boundary.arn
 }
 
 output "urls" {
