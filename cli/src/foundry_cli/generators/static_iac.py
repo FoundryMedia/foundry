@@ -605,8 +605,17 @@ def render_iam(spec: StaticSiteSpec) -> str:
 # + CloudFront invalidation). Created on the FIRST local bootstrap apply;
 # thereafter CI assumes it keylessly.
 #
-# TODO(security): replace AdministratorAccess with a least-privilege policy
-# (this stack's S3 / CloudFront / ACM / Route53 / IAM surface) once stable.
+# Permissions: PowerUserAccess (everything except IAM / Organizations / Account)
+# + a scoped inline IAM policy limited to this stack's own <bucket>-* roles /
+# policies / instance profiles and reading the OIDC provider, with two explicit
+# denies:
+#   * attaching an AWS-managed admin policy anywhere (no escalation through a
+#     new <bucket>-* role);
+#   * rewriting THIS role's own trust / policies / boundary / existence.
+#
+# Changes to THIS file are applied LOCALLY with an admin principal, never via
+# CI: DenySelfModification refuses them from the runner, and a CI self-apply
+# could otherwise detach its own policy mid-run and strand the role.
 
 data "aws_iam_openid_connect_provider" "github" {
   url = "https://token.actions.githubusercontent.com"
@@ -648,9 +657,78 @@ resource "aws_iam_role" "tofu_runner" {
   }
 }
 
-resource "aws_iam_role_policy_attachment" "tofu_runner_admin" {
+# Everything except IAM. The stack's surface (S3, CloudFront, ACM, Route53,
+# plus any hand-added Lambda/EventBridge) is fully covered; IAM is granted
+# separately, scoped to this stack's own resources.
+resource "aws_iam_role_policy_attachment" "tofu_runner_poweruser" {
   role       = aws_iam_role.tofu_runner.name
-  policy_arn = "arn:aws:iam::aws:policy/AdministratorAccess"
+  policy_arn = "arn:aws:iam::aws:policy/PowerUserAccess"
+}
+
+data "aws_iam_policy_document" "tofu_runner_iam_scoped" {
+  statement {
+    sid     = "ScopedIamOnStackResources"
+    effect  = "Allow"
+    actions = ["iam:*"]
+    resources = [
+      "arn:aws:iam::*:role/${var.bucket_name}-*",
+      "arn:aws:iam::*:policy/${var.bucket_name}-*",
+      "arn:aws:iam::*:instance-profile/${var.bucket_name}-*",
+      aws_iam_role.tofu_runner.arn,
+    ]
+  }
+
+  statement {
+    sid       = "ReadOidcProvider"
+    effect    = "Allow"
+    actions   = ["iam:GetOpenIDConnectProvider", "iam:ListOpenIDConnectProviders"]
+    resources = ["*"]
+  }
+
+  # No escalation path: the runner may create <bucket>-* roles, but never hand
+  # one an AWS-managed admin policy.
+  statement {
+    sid       = "DenyAdminPolicyAttach"
+    effect    = "Deny"
+    actions   = ["iam:AttachRolePolicy", "iam:AttachUserPolicy", "iam:AttachGroupPolicy"]
+    resources = ["*"]
+
+    condition {
+      test     = "ArnEquals"
+      variable = "iam:PolicyARN"
+      values = [
+        "arn:aws:iam::aws:policy/AdministratorAccess",
+        "arn:aws:iam::aws:policy/PowerUserAccess",
+        "arn:aws:iam::aws:policy/IAMFullAccess",
+      ]
+    }
+  }
+
+  # The runner never rewrites itself — changes to this role are a local admin
+  # apply. Reads (plan refresh) and tags stay allowed.
+  statement {
+    sid    = "DenySelfModification"
+    effect = "Deny"
+    actions = [
+      "iam:UpdateAssumeRolePolicy",
+      "iam:UpdateRole",
+      "iam:UpdateRoleDescription",
+      "iam:PutRolePolicy",
+      "iam:DeleteRolePolicy",
+      "iam:AttachRolePolicy",
+      "iam:DetachRolePolicy",
+      "iam:PutRolePermissionsBoundary",
+      "iam:DeleteRolePermissionsBoundary",
+      "iam:DeleteRole",
+    ]
+    resources = [aws_iam_role.tofu_runner.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "tofu_runner_iam_scoped" {
+  name   = "${var.role_name}-iam-scoped"
+  role   = aws_iam_role.tofu_runner.id
+  policy = data.aws_iam_policy_document.tofu_runner_iam_scoped.json
 }
 """
 
