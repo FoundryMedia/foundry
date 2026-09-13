@@ -87,7 +87,7 @@ def fmms() -> None:
 @fmms.command()
 def queues() -> None:
     """List your matchmaking queues (and how many players are waiting in each)."""
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FMMS_QUEUES)
     rows = fid.api_request("/v1/fmms/queues", token=token) or []
     if not rows:
         click.echo("No queues. Create one with `foundry fmms create-queue <name>` (operator).")
@@ -384,7 +384,7 @@ def queue() -> None:
 @click.option("--game", default=None, help="Filter to a game slug (else the project's .foundry gameId).")
 def queue_list(game) -> None:
     """List the project game's queues (or --game; all your queues if neither resolves)."""
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FMMS_QUEUES)
     slug = (game or "").strip().lower() or project_game_id()
     rows = fid.api_request("/v1/fmms/queues", token=token) or []
     if slug:
@@ -408,7 +408,7 @@ def queue_list(game) -> None:
 @click.option("--json", "as_json", is_flag=True, help="Print the raw queue model JSON.")
 def queue_show(key, game, as_json) -> None:
     """Show a queue's model (KEY = name 'game/mode', id, or FRN)."""
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FMMS_QUEUES)
     q = _find_queue(token, key, game=game)
     model = q.get("model") or {}
     if as_json:
@@ -434,7 +434,7 @@ def queue_show(key, game, as_json) -> None:
 @_model_flags
 def queue_create(**flags) -> None:
     """Create a queue from flags and/or a --model file."""
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FMMS_QUEUES)
     game = _resolve_game(flags.get("game"))
     model = _apply_flags(_load_model_file(flags.get("model_file")), **flags)
     if not str(model.get("displayName") or "").strip():
@@ -452,7 +452,7 @@ def queue_create(**flags) -> None:
 @_model_flags
 def queue_update(key, **flags) -> None:
     """Update a queue's model (KEY = name 'game/mode', id, or FRN). Identity is immutable."""
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FMMS_QUEUES)
     q = _find_queue(token, key, game=flags.get("game"))
     # Seed from the queue's CURRENT model, then overlay a --model file, then the individual flags.
     # `access` is stripped from the seed: PUT treats an ABSENT access as unchanged, so only an
@@ -472,7 +472,7 @@ def queue_update(key, **flags) -> None:
 @click.option("--game", default=None, help="Game slug (else the project's .foundry gameId).")
 def queue_delete(key, game) -> None:
     """Delete a queue (KEY = name 'game/mode', id, or FRN). Idempotent."""
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FMMS_QUEUES)
     q = _find_queue(token, key, game=game)
     fid.api_request(f"/v1/fmms/queues/{q['id']}", method="DELETE", token=token)
     click.echo(click.style(f"✓ Deleted {q.get('name')}", fg="green", bold=True))

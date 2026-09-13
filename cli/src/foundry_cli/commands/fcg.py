@@ -68,7 +68,7 @@ def capacity() -> None:
 @click.option("--json", "as_json", is_flag=True, help="Print the raw policy JSON.")
 def capacity_show(game, as_json) -> None:
     """Show the game's capacity policy (warm servers, burst ceiling, platform ceiling)."""
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FCG_CAPACITY)
     policy = _fetch_policy(token, _resolve_game(game))
     if as_json:
         click.echo(json.dumps(policy, indent=2))
@@ -90,7 +90,7 @@ def capacity_set(game, warm, max_burst, clear_max_burst) -> None:
         raise FoundryError("--max-burst and --clear-max-burst are mutually exclusive.")
     if warm is None and max_burst is None and not clear_max_burst:
         raise FoundryError("Nothing to change. Pass --warm, --max-burst, or --clear-max-burst.")
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_FCG_CAPACITY)
     key = _resolve_game(game)
     # Seed from the CURRENT policy, then overlay the flags (like `fmms queue update`).
     current = _fetch_policy(token, key)

@@ -58,7 +58,8 @@ def upload_build(
     Returns the completed build row (carries ``id`` + ``status``). Shared by
     ``foundry fcm push`` and its deprecated alias ``foundry build push``.
     """
-    token = token or auth.access_token()
+    explicit_token = bool(token)
+    token = token or auth.access_token(scope=auth.SCOPE_PUBLISH)
     filename = os.path.basename(file)
     kind_u = kind.upper()
 
@@ -83,6 +84,10 @@ def upload_build(
     click.echo("Uploading to Foundry storage…")
     fid.put_file(ticket["uploadUrl"], file)
 
+    if not explicit_token:
+        # A long upload can outlive a 60 s API-key token: re-ask before `complete` (key mode
+        # serves the cached token unless it is near expiry; a session refreshes once more).
+        token = auth.access_token(scope=auth.SCOPE_PUBLISH)
     row = fid.api_request(f"/v1/fcm/builds/{ticket['buildId']}/complete", method="POST", token=token)
     if not isinstance(row, dict):
         row = {}
@@ -238,7 +243,7 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
                 "No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
         _guard_byo_signer(publisher, slug, key)
 
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_PUBLISH)
 
     # 1. content-address the staged build + assemble the immutable release doc
     click.echo(f"Hashing {Path(staged_dir).name}…")
@@ -290,6 +295,8 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
         _put_bytes(uploads["index"], root_bytes, "application/json")
         _put_bytes(uploads["indexSig"], sig_text.encode("utf-8"), "application/octet-stream")
 
+    # The uploads above may have outlived a 60 s API-key token: re-ask before `complete`.
+    token = auth.access_token(scope=auth.SCOPE_PUBLISH)
     # 5. finalize — BYO: fid verifies the CLI-signed objects. Managed: fid assembles + KMS-signs.
     fid.api_request(f"/v1/fcm/games/{slug}/publish/complete", method="POST", token=token,
                     body={"version": version, "prerelease": prerelease,
@@ -347,7 +354,7 @@ def channel_set(channel_name, version, managed) -> None:
     slug = (cfg.get("gameId") or "").strip().lower()
     publisher = (cfg.get("publisher") or "").strip().lower()
     ch = channel_name.strip().lower()
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_PUBLISH)
 
     if managed:
         # fid validates the version is published, re-assembles + KMS-signs the index.
@@ -414,7 +421,7 @@ def channel_unset(channel_name, game, managed) -> None:
     """
     ch = channel_name.strip().lower()
     slug = (game or "").strip().lower() or None
-    token = auth.access_token()
+    token = auth.access_token(scope=auth.SCOPE_PUBLISH)
 
     if managed:
         # fid removes the pointer + re-signs the index via the publisher's KMS key server-side.
