@@ -308,7 +308,14 @@ def test_scope_table_fcg():
 
 
 def test_scope_table_keys_stay_interactive():
-    assert _scopes_by_function(keys_cmd) == {"list_keys": [None], "_register": [None]}
+    # `generate` joined the table in ST-75: it checks the SESSION before minting a keypair, so a
+    # signed-out run cannot leave an unregistered local key behind. Bare access_token() (scope
+    # None) is deliberate for all three - registering a BYO signing key is interactive-only.
+    assert _scopes_by_function(keys_cmd) == {
+        "generate": [None],
+        "list_keys": [None],
+        "_register": [None],
+    }
 
 
 def test_key_incapable_command_fails_with_login_message(key_env, recorder):

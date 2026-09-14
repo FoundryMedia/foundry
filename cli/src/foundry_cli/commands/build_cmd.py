@@ -183,6 +183,32 @@ def fcm_push(path_to_build, build_type, name, version, engine, entrypoint, image
 # `foundry fcm publish` — BYO: assemble + SIGN the manifest locally, then upload
 # ---------------------------------------------------------------------------
 
+def _require_managed_signing(token: str) -> None:
+    """Refuse --managed for a publisher Foundry holds no MANAGED signing key for.
+
+    Managed signing means fid signs the index with a per-publisher KMS key. Provisioning one is not
+    self-serve, so most publishers are BYO - and fid decides the branch by the KEY, not by this
+    flag, which is why an un-provisioned --managed publish used to upload everything and then fail
+    at /complete with "Publish artifact missing from storage" (ST-71). Fail OPEN on a read error:
+    a network blip must not block a legitimate managed publish; the worst case is the old message.
+    """
+    try:
+        rows = fid.api_request("/v1/publisher/keys", token=token) or []
+    except Exception as exc:  # noqa: BLE001 - any read failure is non-fatal here
+        click.echo(click.style(f"note: could not check your signing mode ({exc}) — continuing", fg="yellow"))
+        return
+    active = [k for k in rows if isinstance(k, dict) and k.get("status") == "active"]
+    if any((k.get("signerType") or "BYO").upper() == "MANAGED" for k in active):
+        return
+    if active:
+        hint = (f"Your active key {active[0].get('keyId')} is BYO — drop --managed to sign locally.")
+    else:
+        hint = "Run `foundry keys generate` to create and register a BYO key, then drop --managed."
+    raise click.ClickException(
+        "Managed signing is not enabled for this publisher — Foundry holds no signing key for you.\n"
+        + hint)
+
+
 def _load_publisher_config() -> dict:
     """Read the game-publisher .foundry/config.yml (publisher, gameId, build.*). Raises if absent."""
     import yaml  # lazy: only the publish path needs it
@@ -244,6 +270,12 @@ def fcm_publish(staged_dir, version, prerelease, channel, min_launcher, managed)
         _guard_byo_signer(publisher, slug, key)
 
     token = auth.access_token(scope=auth.SCOPE_PUBLISH)
+    if managed:
+        # BEFORE hashing + uploading: --managed is a client-side flag, but fid decides by whether it
+        # holds a MANAGED key for this publisher. Without one it silently takes the BYO branch and
+        # the upload dies at /complete with "Publish artifact missing from storage" - a 400 that
+        # says nothing about signing (ST-71).
+        _require_managed_signing(token)
 
     # 1. content-address the staged build + assemble the immutable release doc
     click.echo(f"Hashing {Path(staged_dir).name}…")
@@ -357,6 +389,7 @@ def channel_set(channel_name, version, managed) -> None:
     token = auth.access_token(scope=auth.SCOPE_PUBLISH)
 
     if managed:
+        _require_managed_signing(token)
         # fid validates the version is published, re-assembles + KMS-signs the index.
         fid.api_request(f"/v1/fcm/games/{slug}/publish/channel", method="POST", token=token,
                         body={"channel": ch, "version": version})
