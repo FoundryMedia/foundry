@@ -40,6 +40,7 @@ class StrategyHandler:
     trigger: str                        # "push" (continuous) | "release" (dispatch + version)
     verify_workflow: str | None = None  # optional PR-verify reusable (push/PR caller)
     mandatory_input: bool = False       # release caller exposes a `mandatory` flag (desktop)
+    runners_input: bool = False         # verify caller can pick runner labels (desktop: opt-in macOS)
 
 
 # Strategy -> handler. The single source of truth for caller generation.
@@ -54,7 +55,7 @@ STRATEGY_REGISTRY: dict[str, StrategyHandler] = {
     ),
     "desktop": StrategyHandler(
         workflow="desktop-release.yml", target="matrix", trigger="release",
-        verify_workflow="desktop-build.yml", mandatory_input=True,
+        verify_workflow="desktop-build.yml", mandatory_input=True, runners_input=True,
     ),
     # "game-publisher": StrategyHandler(
     #     workflow="publisher-release.yml", target="matrix", trigger="release",
@@ -67,6 +68,8 @@ _GH_REF = "${{ github.ref }}"
 _IN_VERSION = "${{ inputs.version }}"
 _IN_ENV = "${{ inputs.environment }}"
 _IN_MANDATORY = "${{ inputs.mandatory }}"
+_DEFAULT_RUNNERS = '["windows-latest"]'
+_IN_RUNNERS = "${{ inputs.runners || '[\"windows-latest\"]' }}"
 
 
 def _manifest_org(manifest: ProjectManifest) -> str | None:
@@ -219,14 +222,33 @@ def render_release_caller(
 
 def render_verify_caller(
     name: str, service: ServiceConfig, branch: str, filename: str, ops_ref: str,
+    *, runners_input: bool = False,
 ) -> str:
-    """PR + push build/test (compile only, no ship): delegate to the build reusable."""
+    """PR + push build/test (compile only, no ship): delegate to the build reusable.
+
+    `runners_input` (desktop) adds a manual dispatch that picks the runner
+    labels the reusable matrixes over. It stays OFF the automatic path on
+    purpose: macOS runner minutes bill at 10x on private repos, so a
+    cross-platform check is something you ask for, not something every push
+    pays for."""
     lines = _header(name, "Build")
     lines += [
         "on:",
         "  pull_request:",
         "  push:",
         f"    branches: [{branch}]",
+    ]
+    if runners_input:
+        lines += [
+            "  workflow_dispatch:",
+            "    inputs:",
+            "      runners:",
+            "        description: JSON array of runner labels to verify on",
+            "        required: false",
+            f"        default: '{_DEFAULT_RUNNERS}'",
+            "        type: string",
+        ]
+    lines += [
         "",
         "permissions:",
         "  contents: read",
@@ -236,8 +258,10 @@ def render_verify_caller(
         f"    uses: {ops_ref}",
         "    with:",
         f"      service: {name}",
-        "    secrets: inherit",
     ]
+    if runners_input:
+        lines.append(f"      runners: {_IN_RUNNERS}")
+    lines.append("    secrets: inherit")
     return "\n".join(lines) + "\n"
 
 
@@ -293,6 +317,9 @@ def generate_all_callers(
         if handler.verify_workflow:
             build_file = f"build-{name}.yml"
             verify_ref = ops_reusable_ref(manifest, handler.verify_workflow, ref)
-            out[(repo, build_file)] = render_verify_caller(name, svc, branch, build_file, verify_ref)
+            out[(repo, build_file)] = render_verify_caller(
+                name, svc, branch, build_file, verify_ref,
+                runners_input=handler.runners_input,
+            )
 
     return out
