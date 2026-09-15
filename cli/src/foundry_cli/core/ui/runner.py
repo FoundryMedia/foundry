@@ -6,6 +6,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -15,6 +16,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical
 from textual.css.query import NoMatches
+from textual.message import Message
 from textual import events
 from textual.selection import Selection
 from textual.strip import Strip
@@ -114,6 +116,71 @@ def _select_driver_class(env=None):
             return
 
     return _TamedMouseLinuxDriver
+
+
+# ── Key semantics (Justin, 2026-09-14) ──────────────────────────────────
+#
+# ESC backs out ONE level: log pane -> sidebar (same as Left), a fullscreen
+# log -> sidebar, sidebar -> quit. Ctrl+C copies the selection when there is
+# one and otherwise follows the terminal convention: on the sidebar a single
+# press quits; in the log a SECOND press within CTRL_C_QUIT_WINDOW quits
+# (mashing Ctrl+C closes the program like any terminal app), the first press
+# only hints.
+#
+# macOS: Cmd+C is the copy key there, but a terminal never forwards Cmd+C to
+# the program it hosts - it is the terminal's OWN Copy menu item, and with
+# mouse reporting on there is no terminal selection for it to copy. The TUI
+# cannot receive it. So on macOS the drag-selection is copied ON RELEASE
+# (select-to-copy, with a toast) and Ctrl+C keeps only its terminal meaning.
+# Option+drag still makes a native terminal selection that Cmd+C copies.
+#
+# Overrides:
+#   FOUNDRY_TUI_COPY_ON_SELECT=1|0   select-to-copy (default: on for macOS only)
+#   FOUNDRY_TUI_CTRL_C=copy|quit     what the footer/hint SAY a bare Ctrl+C
+#                                    does (default: copy off macOS, quit on it)
+
+CTRL_C_QUIT_WINDOW = 1.5  # seconds between two Ctrl+C presses in the log that quit
+
+
+def _copy_on_select(env=None, platform: str | None = None) -> bool:
+    """Copy a drag-selection the moment the mouse releases."""
+    env = os.environ if env is None else env
+    platform = sys.platform if platform is None else platform
+    forced = _truthy(env.get("FOUNDRY_TUI_COPY_ON_SELECT"))
+    if forced is not None:
+        return forced
+    return platform == "darwin"
+
+
+def _ctrl_c_copies(env=None, platform: str | None = None) -> bool:
+    """Is Ctrl+C advertised as the copy key (True) or as quit (macOS)?"""
+    env = os.environ if env is None else env
+    platform = sys.platform if platform is None else platform
+    raw_value = (env.get("FOUNDRY_TUI_CTRL_C") or "").strip().lower()
+    if raw_value in ("copy", "quit"):
+        return raw_value == "copy"
+    return platform != "darwin"
+
+
+def _escape_verdict(focus: str, sidebar_visible: bool) -> str:
+    """'back' (log -> sidebar), 'exit_fullscreen' (log, sidebar hidden) or 'quit'."""
+    if focus == "log":
+        return "back" if sidebar_visible else "exit_fullscreen"
+    return "quit"
+
+
+def _ctrl_c_verdict(focus: str, has_selection: bool, seconds_since_last: float | None) -> str:
+    """'copy', 'quit' or 'hint' (first press in the log with nothing selected)."""
+    if has_selection:
+        return "copy"
+    if focus != "log":
+        return "quit"
+    if seconds_since_last is not None and seconds_since_last <= CTRL_C_QUIT_WINDOW:
+        return "quit"
+    return "hint"
+
+
+_CTRL_C_DESCRIPTION = "Copy / Quit" if _ctrl_c_copies() else "Quit"
 
 
 def _sanitize_id(name: str) -> str:
@@ -293,6 +360,13 @@ class SelectableRichLog(RichLog):
     def selection_updated(self, selection: Selection | None) -> None:
         self.refresh()
 
+    class DragSelected(Message):
+        """A click+drag selection was just released - the gesture is complete.
+
+        The app decides what to do with it (select-to-copy on macOS); the
+        widget only reports the gesture.
+        """
+
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
         self._sel_anchor = None  # content-space Offset of mouse-down
@@ -343,11 +417,14 @@ class SelectableRichLog(RichLog):
     def on_mouse_up(self, event: events.MouseUp) -> None:
         self.release_mouse()
         was_click = self._sel_anchor is not None and not self._sel_dragging
+        was_drag = self._sel_anchor is not None and self._sel_dragging
         self._sel_anchor = None
         self._sel_dragging = False
         if was_click and self.screen.selections:
             self.screen.clear_selection()
             self.refresh()
+        elif was_drag:
+            self.post_message(self.DragSelected())
 
     def render_line(self, y: int) -> Strip:
         scroll_x, scroll_y = self.scroll_offset
@@ -576,9 +653,11 @@ class ServicesUI(App[None]):
     ALLOW_SELECT = False
 
     BINDINGS = [
-        # Esc quits so Ctrl+C is free for the universal "copy selection".
-        Binding("escape", "request_quit", "Quit", priority=True, key_display="ESC"),
-        Binding("ctrl+c", "copy_selection", "Copy", priority=True),
+        # ESC backs out one level (log -> sidebar -> quit). Ctrl+C copies a
+        # selection, else the terminal convention - see the key-semantics
+        # note above _copy_on_select for the whole contract incl. macOS.
+        Binding("escape", "escape", "Back / Quit", priority=True, key_display="ESC"),
+        Binding("ctrl+c", "ctrl_c", _CTRL_C_DESCRIPTION, priority=True),
 
         # Navigation / focus: pure arrow-key flow — → into the log, ← back to
         # the sidebar (priority so it beats the log's own horizontal scroll).
@@ -645,6 +724,8 @@ class ServicesUI(App[None]):
                 self._display_names[svc.name] = svc.name
 
         self._focus: str = "list"
+        self._last_ctrl_c: float | None = None  # monotonic time of the last Ctrl+C
+        self._copy_on_select = _copy_on_select()
         self._is_vscode = os.environ.get("TERM_PROGRAM") == "vscode"
 
         # Tunnel readiness events — sidecars wait for their parent's tunnel
@@ -694,10 +775,14 @@ class ServicesUI(App[None]):
 
 
     def _hint_select(self) -> str:
-        return "↑/↓ Select • → to Interact" if self._glyphs else "Up/Down Select - Right to Interact"
+        return (
+            "↑/↓ Select • → to Interact • ESC to Quit"
+            if self._glyphs
+            else "Up/Down Select - Right to Interact - ESC to Quit"
+        )
 
     def _hint_back(self) -> str:
-        return "← to Change Service" if self._glyphs else "Left to Change Service"
+        return "← or ESC to Change Service" if self._glyphs else "Left or ESC to Change Service"
 
     def _update_service_label(self, service_name: str) -> None:
         safe_id = f"svc-{_sanitize_id(service_name)}"
@@ -1088,7 +1173,7 @@ class ServicesUI(App[None]):
             pass
 
     def action_unfocus(self) -> None:
-        """Return focus to the services list (Escape)."""
+        """Return focus to the services list (Left, or ESC from the log)."""
 
         self._focus = "list"
         self.query_one("#services", ListView).focus()
@@ -1173,24 +1258,72 @@ class ServicesUI(App[None]):
                 self.call_later(self.run_action, binding.action)
                 return
 
-    def action_copy_selection(self) -> None:
-        """Copy the mouse-selected text to the clipboard (Ctrl+C)."""
-        selection = None
+    def action_escape(self) -> None:
+        """ESC backs out one level: log -> sidebar, fullscreen -> sidebar, sidebar -> quit."""
+        verdict = _escape_verdict(self._focus, self._sidebar_visible)
+        if verdict == "back":
+            self.action_unfocus()
+        elif verdict == "exit_fullscreen":
+            self.action_toggle_fullscreen()
+        else:
+            self.call_later(self.run_action, "request_quit")
+
+    def action_ctrl_c(self) -> None:
+        """Ctrl+C: copy a selection; otherwise the terminal convention (module note)."""
+        now = time.monotonic()
+        since = None if self._last_ctrl_c is None else now - self._last_ctrl_c
+        self._last_ctrl_c = now
+        verdict = _ctrl_c_verdict(self._focus, bool(self._selected_text()), since)
+        if verdict == "copy":
+            self.action_copy_selection()
+        elif verdict == "quit":
+            self.call_later(self.run_action, "request_quit")
+        else:
+            hint = (
+                "Nothing selected - click+drag in the log to copy. Ctrl+C again quits"
+                if _ctrl_c_copies()
+                else "Ctrl+C again quits (drag in the log to copy)"
+            )
+            self._notify_selected("INFO", hint)
+
+    def _selected_text(self) -> str | None:
         try:
-            selection = self.screen.get_selected_text()
+            return self.screen.get_selected_text() or None
         except Exception:
-            pass
+            return None
+
+    def on_selectable_rich_log_drag_selected(
+        self, _: SelectableRichLog.DragSelected
+    ) -> None:
+        """Select-to-copy: the drag just released - copy it now, keep the highlight."""
+        if not self._copy_on_select:
+            return
+        selection = self._selected_text()
+        if selection:
+            self._copy_and_report(selection, clear=False)
+
+    def action_copy_selection(self) -> None:
+        """Copy the mouse-selected text to the clipboard (Ctrl+C with a selection)."""
+        selection = self._selected_text()
         if not selection:
             self._notify_selected(
                 "INFO", "Nothing selected - click+drag in the log, then Ctrl+C"
             )
             return
+        self._copy_and_report(selection, clear=True)
+
+    def _copy_and_report(self, selection: str, *, clear: bool) -> None:
         err = _copy_text_to_clipboard(selection)
         if err is None:
-            if self._debug:
-                count = selection.count("\n") + 1
+            count = selection.count("\n") + 1
+            if not clear:
+                # Select-to-copy has no key press to confirm it - say so.
+                paste = "Cmd+V" if sys.platform == "darwin" else "Ctrl+V"
+                self._notify_selected("INFO", f"Copied {count} line(s) - {paste} to paste")
+            elif self._debug:
                 self._notify_selected("DEBUG", f"Copied selection ({count} lines) to clipboard")
-            self.screen.clear_selection()
+            if clear:
+                self.screen.clear_selection()
         else:
             self._notify_selected("ERROR", f"Clipboard copy failed: {err}")
 

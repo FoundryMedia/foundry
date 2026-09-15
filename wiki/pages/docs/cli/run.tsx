@@ -56,6 +56,22 @@ foundry run [-d|--debug] build [--filter NAMES]`}</code></pre>
           UI. Overrides: <code>FOUNDRY_TUI_GLYPHS=1|0</code>, <code>FOUNDRY_TUI_MOUSE=1|0|clicks</code>.
         </p>
 
+        <h2>Keys</h2>
+        <p>
+          <strong>ESC backs out one level</strong>: from the log pane it returns to the sidebar
+          (the same as Left); from the sidebar it quits; from a fullscreen log (Tab) it brings
+          the sidebar back first. <strong>Ctrl+C copies the selection</strong> when you have
+          click+dragged in the log, and otherwise means what it means in any terminal program:
+          on the sidebar a single press quits, in the log a second press within 1.5 s quits (the
+          first only hints). On <strong>macOS</strong> the copy key is Cmd+C, but a terminal
+          never forwards Cmd+C to the program it hosts (it is the terminal&apos;s own Copy menu
+          item, and with mouse reporting on there is no terminal selection for it to copy), so the
+          TUI copies a drag-selection <em>on release</em> and confirms it in the log; Option+drag
+          still makes a native selection that Cmd+C copies. Overrides:{" "}
+          <code>FOUNDRY_TUI_COPY_ON_SELECT=1|0</code> (select-to-copy, default on for macOS only),{" "}
+          <code>FOUNDRY_TUI_CTRL_C=copy|quit</code> (what the footer advertises for a bare Ctrl+C).
+        </p>
+
         <h2>What runs, and how <code>run.script</code> is interpreted</h2>
         <p>
           Every service <strong>declared</strong> in the manifest runs (or fails visibly with the
