@@ -371,24 +371,28 @@ def channel() -> None:
 @channel.command(name="set")
 @click.argument("channel_name", metavar="CHANNEL")
 @click.argument("version")
+@click.option("--game", default=None, help="Game slug (else the project's .foundry gameId).")
 @click.option("--managed", is_flag=True,
               help="Managed: fid re-signs the index via your KMS key. Default is BYO (re-sign locally).")
-def channel_set(channel_name, version, managed) -> None:
+def channel_set(channel_name, version, game, managed) -> None:
     """Point CHANNEL (e.g. stable) at an already-published VERSION.
 
     The pointer lives INSIDE the signed index.json. BYO (default): re-sign the index
     on THIS machine + upload it. --managed: fid re-signs via your KMS key (the console
     "Change" button does the same). Rollback = point back at an older version.
+    --game lets a managed flip run from any directory (same as `channel unset`); BYO
+    still reads the project config for the publisher handle.
     """
     from foundry_cli.core import minisign, fcm_manifest as fm
 
-    cfg = _load_publisher_config()
-    slug = (cfg.get("gameId") or "").strip().lower()
-    publisher = (cfg.get("publisher") or "").strip().lower()
     ch = channel_name.strip().lower()
+    slug = (game or "").strip().lower() or None
     token = auth.access_token(scope=auth.SCOPE_PUBLISH)
 
     if managed:
+        if not slug:
+            cfg = _load_publisher_config()
+            slug = (cfg.get("gameId") or "").strip().lower()
         _require_managed_signing(token)
         # fid validates the version is published, re-assembles + KMS-signs the index.
         fid.api_request(f"/v1/fcm/games/{slug}/publish/channel", method="POST", token=token,
@@ -398,6 +402,9 @@ def channel_set(channel_name, version, managed) -> None:
             fg="green", bold=True))
         return
 
+    cfg = _load_publisher_config()
+    slug = slug or (cfg.get("gameId") or "").strip().lower()
+    publisher = (cfg.get("publisher") or "").strip().lower()
     key = minisign.load()
     if not key:
         raise click.ClickException("No local signing key. Run `foundry keys generate` (BYO) or pass --managed.")
