@@ -4,7 +4,8 @@ Configure a game's capacity policy from the CLI (parity with the console's FCG v
   capacity show        the game's current policy (warm servers, burst ceiling, plan)
   capacity set         change it (read-modify-write; only the flags you pass change)
 
-Vocabulary: WARM SERVERS = always-on capacity kept running for your game (paid plans);
+Vocabulary: WARM SERVERS = always-on capacity kept running for your game (one is included per
+game and spends your server minutes while idle; `--warm 0` turns it off; more needs Reserved);
 BURST CEILING = the max concurrent servers your game may scale to (unset = the platform
 default ceiling). Game scope defaults from the project's `.foundry/config.yml` gameId
 (game-publisher projects), like `foundry fmms queue`. Run `foundry login` first.
@@ -42,6 +43,13 @@ def _print_policy(policy: dict) -> None:
     ceiling = policy.get("platformCeiling")
     click.echo(click.style(policy.get("gameSlug", "?"), fg="cyan", bold=True))
     click.echo(f"  warm servers (always-on): {policy.get('warmServers', 0)}")
+    included = policy.get("freeWarmServers")
+    if included:
+        click.echo(
+            f"  included warm servers: {included} "
+            "(idle time spends your server minutes; --warm 0 turns it off; "
+            "the first match after idle then waits ~10 min for a server to boot)"
+        )
     click.echo(
         "  burst ceiling: "
         + (str(burst) if burst is not None else f"platform default ({ceiling})")
@@ -49,6 +57,10 @@ def _print_policy(policy: dict) -> None:
     click.echo(f"  platform ceiling: {ceiling}")
     if policy.get("entitled"):
         click.echo(click.style("  always-on: available on your plan", fg="green"))
+    elif policy.get("freeWarmServers"):
+        click.echo(click.style(
+            f"  always-on: {policy['freeWarmServers']} included; more than that needs a paid plan",
+            fg="yellow"))
     else:
         click.echo(click.style("  always-on: needs a paid plan (warm servers stay 0)", fg="yellow"))
 
@@ -79,7 +91,8 @@ def capacity_show(game, as_json) -> None:
 @capacity.command(name="set")
 @click.option("--game", default=None, help="Game slug or FRN (else the project's .foundry gameId).")
 @click.option("--warm", type=int, default=None,
-              help="Warm (always-on) server count; >0 needs a paid plan.")
+              help="Warm (always-on) server count; 1 is included per game (0 turns it off),"
+                   " more needs a paid plan.")
 @click.option("--max-burst", type=int, default=None,
               help="Burst ceiling: max concurrent servers (within the platform ceiling).")
 @click.option("--clear-max-burst", is_flag=True, default=False,
