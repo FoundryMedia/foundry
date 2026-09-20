@@ -507,7 +507,8 @@ def _handle_fresh_init(
 )
 @click.option(
     "--template", "-t", default=None,
-    help="Template to use for scaffolding.",
+    help="Template to use for scaffolding. `ue5-game`: turn the Unreal C++ project in this "
+         "folder into a Foundry game project (plugin, Server target, config, Dockerfile).",
 )
 @click.option(
     "--dry-run", is_flag=True, default=False,
@@ -517,6 +518,13 @@ def _handle_fresh_init(
     "--force", "-f", is_flag=True, default=False,
     help="Force regeneration of .foundry/workspace.yml even if it already exists.",
 )
+@click.option("--publisher", default=None, help="(ue5-game) Your publisher handle, for .foundry/config.yml.")
+@click.option("--game", default=None, help="(ue5-game) Game slug (default: derived from the project name).")
+@click.option("--ue-root", "ue_root", default=None,
+              help="(ue5-game) Path to your UE 5.7 SOURCE build (default: resolved from the .uproject's EngineAssociation).")
+@click.option("--plugin-version", default=None, help="(ue5-game) FoundryFSDK release to install (default: latest).")
+@click.option("--no-plugin", "no_plugin", is_flag=True, default=False,
+              help="(ue5-game) Skip the plugin download (offline; install Plugins/FoundryFSDK yourself).")
 @click.pass_context
 def init(
     ctx: click.Context,
@@ -524,6 +532,11 @@ def init(
     template: str | None,
     dry_run: bool,
     force: bool,
+    publisher: str | None,
+    game: str | None,
+    ue_root: str | None,
+    plugin_version: str | None,
+    no_plugin: bool,
 ) -> None:
     """Initialize or refresh a Foundry platform in the current directory."""
     try:
@@ -532,6 +545,13 @@ def init(
             template=template,
             dry_run=dry_run,
             force=force,
+            template_opts={
+                "publisher": publisher,
+                "game": game,
+                "ue_root": ue_root,
+                "plugin_version": plugin_version,
+                "install_plugin": not no_plugin,
+            },
         )
     except FoundryError as e:
         click.echo(
@@ -547,9 +567,28 @@ def _run_init(
     template: str | None,
     dry_run: bool,
     force: bool = False,
+    template_opts: dict[str, Any] | None = None,
 ) -> None:
     """Core init logic, separated from the Click handler for testability."""
     cwd = Path.cwd()
+
+    # A game project is not a platform: the ue5-game template has its own detection
+    # (the .uproject) and never touches foundry.json / workspace.yml.
+    if template == "ue5-game":
+        from foundry_cli.commands.init_ue5 import init_ue5_game
+
+        opts = template_opts or {}
+        init_ue5_game(
+            cwd,
+            publisher=opts.get("publisher"),
+            game=opts.get("game"),
+            ue_root=opts.get("ue_root"),
+            plugin_version=opts.get("plugin_version"),
+            install_plugin=bool(opts.get("install_plugin", True)),
+            dry_run=dry_run,
+        )
+        return
+
     state = detect_project_state(cwd)
 
     # Already fully initialized — show project status + regenerate
