@@ -337,4 +337,4 @@ def test_version_bumped():
     # Resolve from THIS file, not the installed package: CI runs the suite against a
     # non-editable install, where the package's parents land in site-packages.
     py = Path(__file__).resolve().parents[1] / "pyproject.toml"
-    assert 'version = "0.17.0"' in py.read_text(encoding="utf-8")
+    assert 'version = "0.18.0"' in py.read_text(encoding="utf-8")
