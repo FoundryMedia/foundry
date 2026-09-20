@@ -17,11 +17,41 @@ export default function InitCommandPage(): React.ReactElement {
           </thead>
           <tbody>
             <tr><td><code>--name, -n</code></td><td>Platform name (kebab-case). Defaults to the current directory name.</td></tr>
-            <tr><td><code>--template, -t</code></td><td>Template to scaffold from. <em>Not yet implemented</em> — any value other than <code>default</code> falls back to the default scaffold.</td></tr>
+            <tr><td><code>--template, -t</code></td><td>Template to scaffold from. <code>ue5-game</code> turns the Unreal C++ project in the current folder into a Foundry game project (below). Any other value falls back to the default platform scaffold.</td></tr>
             <tr><td><code>--dry-run</code></td><td>Show what would be created without writing any files.</td></tr>
             <tr><td><code>--force, -f</code></td><td>Force regeneration of <code>.foundry/workspace.yml</code> even if it already exists.</td></tr>
+            <tr><td><code>--publisher</code></td><td><em>(ue5-game)</em> Your publisher handle, written to <code>.foundry/config.yml</code>.</td></tr>
+            <tr><td><code>--game</code></td><td><em>(ue5-game)</em> Game slug. Default: derived from the project name (<code>GooCrew</code> → <code>goo-crew</code>).</td></tr>
+            <tr><td><code>--ue-root</code></td><td><em>(ue5-game)</em> Path to your UE 5.7 <strong>source</strong> build. Default: resolved from the <code>.uproject</code>&apos;s <code>EngineAssociation</code> (Windows registry).</td></tr>
+            <tr><td><code>--plugin-version</code></td><td><em>(ue5-game)</em> FoundryFSDK release to install. Default: latest.</td></tr>
+            <tr><td><code>--no-plugin</code></td><td><em>(ue5-game)</em> Skip the plugin download (offline). <code>FOUNDRY_FSDK_ZIP=&lt;path&gt;</code> installs from a local zip instead.</td></tr>
           </tbody>
         </table>
+
+        <h2>The <code>ue5-game</code> template</h2>
+        <p>
+          Run it once from the folder that holds your <code>.uproject</code>, right after the
+          editor&apos;s New Project wizard (Games → Blank → <strong>C++</strong>, on an engine built
+          from source — a dedicated-server target needs one):
+        </p>
+        <pre><code>foundry init --template ue5-game --publisher my-handle</code></pre>
+        <p>It performs the install steps of the FoundryFSDK README:</p>
+        <ol>
+          <li>Downloads the latest <a href="https://github.com/FoundryMedia/fsdk-unreal/releases">FoundryFSDK release</a> into <code>Plugins/FoundryFSDK/</code>.</li>
+          <li>Adds the plugin entry to the <code>.uproject</code>.</li>
+          <li>Writes <code>Source/&lt;Game&gt;Server.Target.cs</code> (the dedicated-server target).</li>
+          <li>Adds <code>&quot;FoundryFSDK&quot;</code> to the game module&apos;s <code>PrivateDependencyModuleNames</code>.</li>
+          <li>Pins the network protocol version in the primary game module (<code>FNetworkVersion::GetLocalNetworkVersionOverride</code>) — without it, clients and servers from different releases refuse each other.</li>
+          <li>Writes <code>.foundry/config.yml</code> (<code>kind: game-publisher</code>, with the <code>build</code> and <code>server</code> blocks <code>foundry package</code> reads) and a self-contained <code>Docker/Dockerfile</code>.</li>
+        </ol>
+        <p>
+          Every step is idempotent and nothing you already have is overwritten. The edits to
+          wizard-generated files are anchored on the exact lines the UE 5.7 Blank template writes;
+          a customized <code>Build.cs</code> or module <code>.cpp</code> is left alone and the step
+          is printed under <em>By hand</em>. After it runs: regenerate project files, build
+          <code>&lt;Game&gt;Editor</code>, <code>foundry login</code>, and register the game with{" "}
+          <code>foundry games create --name &quot;…&quot;</code>.
+        </p>
 
         <h2>Behavior</h2>
         <p><code>foundry init</code> detects the project state and acts accordingly:</p>
