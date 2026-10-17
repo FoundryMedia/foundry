@@ -146,7 +146,13 @@ def _validate_chunked_output(staged: Path, chunking: bool) -> None:
 
     if not chunking:
         return
-    if len(containers) == 1 and containers[0].stat().st_size > _CHUNK_SIZE_GATE_BYTES:
+    # The engine's own `global.ucas` (shader library + script objects, a few MB) ships
+    # beside the game containers in EVERY IoStore cook. Counting it as a "second container"
+    # let Goo Crew's single 368 MB GooCrew-Windows.ucas pass this gate for months
+    # (2026-10-16: "still 500mb download" on a seeded install). Judge the GAME containers only.
+    game = [c for c in containers if not c.name.lower().startswith("global")]
+    if len(game) <= 1 and game and game[0].stat().st_size > _CHUNK_SIZE_GATE_BYTES:
+        containers = game
         raise FoundryError(
             f"Cook produced a SINGLE {containers[0].stat().st_size / (1024 * 1024):,.0f} MB content "
             "container — every content change would re-ship all of it to players.\n"
