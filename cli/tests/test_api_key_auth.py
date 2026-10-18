@@ -304,6 +304,7 @@ def test_scope_table_fcg():
     assert _scopes_by_function(fcg) == {
         "capacity_show": [auth.SCOPE_FCG_CAPACITY],
         "capacity_set": [auth.SCOPE_FCG_CAPACITY],
+        "footprint": [auth.SCOPE_FCG_CAPACITY],
     }
 
 
